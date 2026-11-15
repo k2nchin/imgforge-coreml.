@@ -66,6 +66,27 @@ def load_model(weights: Path, variant: str):
     return net, cfg["scale"]
 
 
+def wrap(net):
+    """
+    coremltools exige scale=1.0 en una salida ImageType, asi que la
+    desnormalizacion 0-1 -> 0-255 va dentro del grafo. El clamp evita
+    que los valores fuera de rango se envuelvan al convertir a uint8.
+    """
+    import torch
+
+    class Denormalized(torch.nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+
+        def forward(self, x):
+            return torch.clamp(self.inner(x), 0.0, 1.0) * 255.0
+
+    m = Denormalized(net)
+    m.eval()
+    return m
+
+
 def main() -> int:
     args = parse_args()
     logging.basicConfig(
@@ -85,11 +106,13 @@ def main() -> int:
     import coremltools as ct
 
     net, scale = load_model(args.weights, args.variant)
+    model = wrap(net)
 
     example = torch.rand(1, 3, args.tile, args.tile)
     LOG.info("Trazando con entrada %s", tuple(example.shape))
     try:
-        traced = torch.jit.trace(net, example, strict=False)
+        with torch.no_grad():
+            traced = torch.jit.trace(model, example, strict=False)
         traced.eval()
     except Exception:
         LOG.exception("El trazado fallo")
@@ -115,7 +138,6 @@ def main() -> int:
             )],
             outputs=[ct.ImageType(
                 name="output",
-                scale=255.0,
                 color_layout=ct.colorlayout.RGB,
             )],
         )
