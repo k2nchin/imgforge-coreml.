@@ -81,30 +81,28 @@ enum Vectorizer {
             throw ForgeError.noContours
         }
 
-        let source = (try? obs.polygonApproximation(
-            epsilon: max(0.0001, options.simplify))) ?? obs
-
+        let epsilon = max(Float(0.0001), options.simplify)
         var out: [String] = []
 
-        func walk(_ c: VNContour, depth: Int) {
-            let pts = c.normalizedPoints.map { SIMD2<Float>($0.x, 1 - $0.y) }
+        /// La simplificación vive en VNContour, no en la observación,
+        /// y se aplica contorno por contorno.
+        func walk(_ contour: VNContour, depth: Int) {
+            let simplified = (try? contour.polygonApproximation(epsilon: epsilon)) ?? contour
+            let pts = simplified.normalizedPoints.map { SIMD2<Float>($0.x, 1 - $0.y) }
+
             if pts.count >= 3, area(pts) >= options.minArea {
                 out.append(options.curves
                            ? BezierFitter.fit(pts, error: options.curveError)
                            : polyline(pts))
             }
             guard depth < 6 else { return }
-            for i in 0..<c.childContourCount {
-                if let child = try? c.childContours[i] {
-                    walk(child, depth: depth + 1)
-                }
+            for child in contour.childContours {
+                walk(child, depth: depth + 1)
             }
         }
 
-        for i in 0..<source.topLevelContourCount {
-            if let c = try? source.topLevelContours[i] {
-                walk(c, depth: 0)
-            }
+        for contour in obs.topLevelContours {
+            walk(contour, depth: 0)
         }
         return out
     }

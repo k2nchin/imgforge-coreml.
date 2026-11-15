@@ -163,8 +163,8 @@ enum Upscaler {
             f.inputImage = image
             f.scale = Float(scale)
             f.aspectRatio = 1
-            f.b = 0
-            f.c = 0.75
+            f.parameterB = 0
+            f.parameterC = 0.75
             guard let o = f.outputImage else { throw ForgeError.filterFailed("bicubic") }
             return o
         case .nearest:
