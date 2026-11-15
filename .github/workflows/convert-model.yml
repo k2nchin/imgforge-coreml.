@@ -96,6 +96,7 @@ jobs:
       - name: Compile to .mlmodelc
         run: |
           set -euo pipefail
+          mkdir -p build/generated
           xcrun coremlcompiler compile build/RealESRGAN.mlpackage build/
           xcrun coremlcompiler generate build/RealESRGAN.mlpackage \
             --language Swift build/generated/
