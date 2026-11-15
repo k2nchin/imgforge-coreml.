@@ -52,31 +52,67 @@ enum Upscaler {
             <= ForgeEnvironment.maxOutputPixels
     }
 
-    enum Quality {
-        case draft(maxEdge: Int)
-        case full
+    static func run(_ input: UIImage,
+                    options: Options,
+                    quality: Quality = .full,
+                    isCancelled: () -> Bool = { false }) throws -> UIImage {
+        try runDetailed(input, options: options,
+                        quality: quality, isCancelled: isCancelled).image
     }
 
-    static let context: CIContext = {
-        CIContext(options: [.useSoftwareRenderer: false, .cacheIntermediates: false])
-    }()
+    static func runDetailed(_ input: UIImage,
+                            options: Options,
+                            quality: Quality = .full,
+                            isCancelled: () -> Bool = { false }) throws -> Outcome {
+        guard let cg = input.cgImage else { throw ForgeError.decodeFailed }
 
-    // MARK: - Entrada
+        if case .draft(let maxEdge) = quality {
+            return Outcome(image: try draft(cg, options: options, maxEdge: maxEdge),
+                           engine: .classic)
+        }
 
-    struct Outcome {
-        let image: UIImage
-        let engine: Engine
+        let outW = Int(CGFloat(cg.width) * options.scale)
+        let outH = Int(CGFloat(cg.height) * options.scale)
+        guard outW > 0, outH > 0 else { throw ForgeError.decodeFailed }
+        guard outW * outH <= maxOutputPixels else {
+            throw ForgeError.tooLarge(pixels: outW * outH, limit: maxOutputPixels)
+        }
+
+        let available = NeuralUpscaler.isAvailable
+
+        func neural() throws -> UIImage {
+            try NeuralUpscaler.run(cg, options: options,
+                                   context: context,
+                                   isCancelled: isCancelled)
+        }
+
+        switch options.engine {
+        case .neural:
+            guard available else {
+                throw ForgeError.modelMissing(NeuralUpscaler.modelName)
+            }
+            return Outcome(image: try neural(), engine: .neural)
+
+        case .auto where available:
+            do {
+                return Outcome(image: try neural(), engine: .neural)
+            } catch ForgeError.cancelled {
+                throw ForgeError.cancelled
+            } catch {
+                // El modelo falló; el motor clásico sigue siendo válido.
+            }
+
+        default:
+            break
+        }
+
+        if isCancelled() { throw ForgeError.cancelled }
+
+        let image = try classic(cg, options: options,
+                                size: CGSize(width: outW, height: outH))
+        return Outcome(image: image, engine: .classic)
     }
 
-    /// La ruta neural cabe siempre que quepa la salida pedida: cada
-    /// baldosa se reduce a su hueco al componerla, así que el lienzo 4×
-    /// completo nunca llega a existir.
-    static func neuralFits(_ cg: CGImage, scale: CGFloat) -> Bool {
-        Int(CGFloat(cg.width) * scale) * Int(CGFloat(cg.height) * scale)
-            <= ForgeEnvironment.maxOutputPixels
-    }
-
-    /// Decide qué se le da al modelo.
     // MARK: - Draft
 
     private static func draft(_ cg: CGImage,
