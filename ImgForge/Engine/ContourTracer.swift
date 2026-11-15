@@ -1,65 +1,127 @@
 import CoreGraphics
 import simd
 
-/// Trazador de bordes propio, sobre la rejilla de píxeles a resolución completa.
+/// Trazador de bordes sobre la rejilla de píxeles.
 ///
-/// Vision recorta a 1024 px y entrega contornos suavizados de antemano.
-/// Esto sigue el borde píxel a píxel (vecindad de Moore con criterio de
-/// Jacob), que es lo que hacen potrace y vtracer, y preserva el detalle
-/// real de la máscara.
+/// Sigue la **frontera entre píxeles**, no sus centros. Es la diferencia
+/// que separa esto de un trazado casero: recorriendo centros, una esquina
+/// de 90° se corta en diagonal y queda comida; recorriendo la frontera,
+/// la esquina es exacta. Es lo que hace potrace, y por eso Illustrator
+/// devuelve ángulos rectos de verdad.
 enum ContourTracer {
 
-    /// Lado máximo de la rejilla analizada. Por encima se reduce, porque
-    /// el coste es lineal en el perímetro y una foto de 48 MP produce
-    /// cientos de miles de puntos sin ganancia visible.
-    static let maxEdge = 2048
+    /// Lado máximo de la rejilla analizada.
+    static let maxEdge = 3000
 
     struct Contour {
-        /// Puntos en coordenadas normalizadas, origen arriba-izquierda.
+        /// Puntos normalizados, origen arriba-izquierda.
         let points: [SIMD2<Float>]
-        /// Área normalizada con signo: el signo indica el sentido de giro.
+        /// Área normalizada con signo: el signo da el sentido de giro.
         let area: Float
     }
 
-    /// Extrae todos los bordes cerrados de una máscara en escala de grises.
-    /// Los contornos anidados salen tal cual; con `fill-rule="evenodd"`
-    /// los interiores se convierten en huecos sin trabajo extra.
-    static func trace(mask cg: CGImage, threshold: UInt8 = 128) throws -> [Contour] {
+    /// - Parameter threshold: nivel de corte 0–255, o `nil` para calcularlo
+    ///   con el método de Otsu sobre el histograma de la imagen.
+    static func trace(mask cg: CGImage, threshold: UInt8? = nil) throws -> [Contour] {
         let (grid, w, h) = try rasterize(cg, threshold: threshold)
-        guard w > 2, h > 2 else { return [] }
+        guard w >= 2, h >= 2 else { return [] }
 
-        var visited = [Bool](repeating: false, count: w * h)
+        // La rejilla se consulta con origen abajo, como el espacio de
+        // coordenadas en el que se definen los giros.
+        func fg(_ x: Int, _ y: Int) -> Bool {
+            guard x >= 0, y >= 0, x < w, y < h else { return false }
+            return grid[(h - 1 - y) * w + x]
+        }
+
+        var usedEdges = Set<Int>()
         var out: [Contour] = []
 
-        let fw = Float(w)
-        let fh = Float(h)
+        let fw = Float(w), fh = Float(h)
+        let maxSteps = (w + 1) * (h + 1) * 4
 
         for y in 0..<h {
             for x in 0..<w {
-                let i = y * w + x
-                guard grid[i], !visited[i] else { continue }
+                // Arranque: píxel activo cuyo vecino izquierdo es fondo.
+                // Su arista izquierda es un borde, y se recorre hacia arriba.
+                guard fg(x, y), !fg(x - 1, y) else { continue }
+                let key = edgeKey(x: x, y: y, dir: 0, w: w)
+                guard !usedEdges.contains(key) else { continue }
 
-                // Solo arranca en un píxel cuyo vecino izquierdo es fondo:
-                // ese es un borde todavía no recorrido.
-                let leftIsBackground = (x == 0) || !grid[i - 1]
-                guard leftIsBackground else { continue }
+                var points: [SIMD2<Float>] = []
+                var px = x, py = y
+                var dir = 0                    // 0 arriba, 1 derecha, 2 abajo, 3 izquierda
+                var steps = 0
 
-                let path = follow(grid: grid, w: w, h: h,
-                                  startX: x, startY: y, visited: &visited)
-                guard path.count >= 4 else { continue }
+                repeat {
+                    usedEdges.insert(edgeKey(x: px, y: py, dir: dir, w: w))
+                    points.append(SIMD2(Float(px) / fw, 1 - Float(py) / fh))
 
-                let pts = path.map { SIMD2<Float>(Float($0.0) / fw, Float($0.1) / fh) }
-                let a = signedArea(pts)
-                out.append(Contour(points: pts, area: a))
+                    // Invariante: el relleno queda a la derecha del avance.
+                    let (lx, ly) = frontLeft(px, py, dir)
+                    let (rx, ry) = frontRight(px, py, dir)
+
+                    if !fg(rx, ry) {
+                        dir = (dir + 1) & 3            // girar a la derecha
+                    } else if fg(lx, ly) {
+                        dir = (dir + 3) & 3            // girar a la izquierda
+                    }
+
+                    let step = delta(dir)
+                    px += step.0
+                    py += step.1
+
+                    steps += 1
+                    if steps > maxSteps { break }
+
+                } while !(px == x && py == y)
+
+                guard points.count >= 4 else { continue }
+                out.append(Contour(points: points, area: signedArea(points)))
             }
         }
         return out
     }
 
+    // MARK: - Geometría del recorrido
+
+    /// Arista que sale del vértice (x, y) en una dirección, como clave única.
+    private static func edgeKey(x: Int, y: Int, dir: Int, w: Int) -> Int {
+        ((y * (w + 1)) + x) * 4 + dir
+    }
+
+    private static func delta(_ dir: Int) -> (Int, Int) {
+        switch dir {
+        case 0:  return (0, 1)
+        case 1:  return (1, 0)
+        case 2:  return (0, -1)
+        default: return (-1, 0)
+        }
+    }
+
+    /// Píxel que toca la arista siguiente por el lado izquierdo del avance.
+    private static func frontLeft(_ x: Int, _ y: Int, _ dir: Int) -> (Int, Int) {
+        switch dir {
+        case 0:  return (x - 1, y)
+        case 1:  return (x, y)
+        case 2:  return (x, y - 1)
+        default: return (x - 1, y - 1)
+        }
+    }
+
+    /// Y el que la toca por la derecha.
+    private static func frontRight(_ x: Int, _ y: Int, _ dir: Int) -> (Int, Int) {
+        switch dir {
+        case 0:  return (x, y)
+        case 1:  return (x, y - 1)
+        case 2:  return (x - 1, y - 1)
+        default: return (x - 1, y)
+        }
+    }
+
     // MARK: - Rejilla
 
     private static func rasterize(_ cg: CGImage,
-                                  threshold: UInt8) throws -> ([Bool], Int, Int) {
+                                  threshold: UInt8?) throws -> ([Bool], Int, Int) {
         let longest = max(cg.width, cg.height)
         let f = min(1.0, CGFloat(maxEdge) / CGFloat(longest))
         let w = max(1, Int((CGFloat(cg.width) * f).rounded()))
@@ -76,66 +138,53 @@ enum ContourTracer {
                       space: CGColorSpaceCreateDeviceGray(),
                       bitmapInfo: CGImageAlphaInfo.none.rawValue
                   ) else { return }
-            ctx.interpolationQuality = .none
+            // Al reducir hace falta promediar: con vecino más próximo el
+            // borde queda escalonado y el trazo hereda esos dientes.
+            ctx.interpolationQuality = .high
             ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
             ok = true
         }
         guard ok else { throw ForgeError.renderFailed }
 
-        return (bytes.map { $0 >= threshold }, w, h)
+        let cut = threshold ?? otsu(bytes)
+        return (bytes.map { $0 >= cut }, w, h)
     }
 
-    // MARK: - Vecindad de Moore
+    /// Umbral de Otsu: el corte que mejor separa los dos grupos del
+    /// histograma. Un 128 fijo falla en cuanto el fondo no es blanco puro.
+    static func otsu(_ bytes: [UInt8]) -> UInt8 {
+        guard !bytes.isEmpty else { return 128 }
 
-    /// Los ocho vecinos en sentido horario, empezando por el oeste.
-    private static let neighbors: [(Int, Int)] = [
-        (-1, 0), (-1, -1), (0, -1), (1, -1),
-        (1, 0), (1, 1), (0, 1), (-1, 1)
-    ]
+        var histogram = [Int](repeating: 0, count: 256)
+        for b in bytes { histogram[Int(b)] += 1 }
 
-    private static func follow(grid: [Bool], w: Int, h: Int,
-                               startX: Int, startY: Int,
-                               visited: inout [Bool]) -> [(Int, Int)] {
-        var path: [(Int, Int)] = []
+        let total = bytes.count
+        var sum = 0.0
+        for i in 0..<256 { sum += Double(i) * Double(histogram[i]) }
 
-        var cx = startX
-        var cy = startY
-        // Se llegó al inicio desde el oeste.
-        var entry = 0
+        var sumBackground = 0.0
+        var weightBackground = 0
+        var best = 0.0
+        var cut = 128
 
-        let maxSteps = w * h * 4
-        var steps = 0
+        for t in 0..<256 {
+            weightBackground += histogram[t]
+            if weightBackground == 0 { continue }
+            let weightForeground = total - weightBackground
+            if weightForeground == 0 { break }
 
-        repeat {
-            path.append((cx, cy))
-            visited[cy * w + cx] = true
+            sumBackground += Double(t) * Double(histogram[t])
+            let meanBackground = sumBackground / Double(weightBackground)
+            let meanForeground = (sum - sumBackground) / Double(weightForeground)
 
-            // Se reanuda la vuelta justo después del vecino por el que se entró.
-            var found = false
-            for k in 1...8 {
-                let dir = (entry + k) % 8
-                let nx = cx + neighbors[dir].0
-                let ny = cy + neighbors[dir].1
-
-                guard nx >= 0, ny >= 0, nx < w, ny < h, grid[ny * w + nx] else { continue }
-
-                // La dirección de entrada al nuevo píxel es la opuesta.
-                entry = (dir + 4) % 8
-                cx = nx
-                cy = ny
-                found = true
-                break
+            let between = Double(weightBackground) * Double(weightForeground)
+                * (meanBackground - meanForeground) * (meanBackground - meanForeground)
+            if between > best {
+                best = between
+                cut = t
             }
-
-            // Píxel aislado: no hay borde que seguir.
-            if !found { break }
-
-            steps += 1
-            if steps > maxSteps { break }
-
-        } while !(cx == startX && cy == startY)
-
-        return path
+        }
+        return UInt8(min(255, max(1, cut)))
     }
 
     // MARK: - Geometría
@@ -153,12 +202,9 @@ enum ContourTracer {
     }
 
     /// Ramer–Douglas–Peucker sobre un contorno cerrado.
-    /// Sustituye a `polygonApproximation` de Vision, que ya no se usa.
     static func simplify(_ pts: [SIMD2<Float>], epsilon: Float) -> [SIMD2<Float>] {
         guard pts.count > 3, epsilon > 0 else { return pts }
 
-        // Un contorno cerrado se parte en dos cadenas por sus extremos
-        // más distantes, para que el algoritmo tenga anclas estables.
         var farIndex = 0
         var farDist: Float = -1
         let head = pts[0]

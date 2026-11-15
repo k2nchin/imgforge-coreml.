@@ -27,6 +27,10 @@ enum Vectorizer {
         var strokeOnly: Bool = false
         var strokeWidth: Double = 1.0
         var monoInk: String = "#000000"
+        /// Nivel de corte 0–255. `nil` lo calcula Otsu sobre el histograma,
+        /// que es lo que hace el deslizador Umbral de Image Trace cuando
+        /// se deja en automático.
+        var threshold: Int? = nil
     }
 
     struct Result {
@@ -78,7 +82,9 @@ enum Vectorizer {
     // MARK: - Trazado
 
     private static func trace(_ cg: CGImage, options: Options) throws -> [String] {
-        let contours = try ContourTracer.trace(mask: cg)
+        let contours = try ContourTracer.trace(
+            mask: cg,
+            threshold: options.threshold.map { UInt8(max(1, min(255, $0))) })
         guard !contours.isEmpty else { return [] }
 
         var out: [String] = []

@@ -245,6 +245,21 @@ struct ContentView: View {
             } else {
                 Toggle("Vectorizar a color", isOn: $store.vectorInColor)
 
+                if !store.vectorInColor {
+                    Toggle("Umbral automático", isOn: Binding(
+                        get: { store.vectorOptions.threshold == nil },
+                        set: { store.vectorOptions.threshold = $0 ? nil : 128 }))
+
+                    if let current = store.vectorOptions.threshold {
+                        slider("Umbral",
+                               value: Binding(
+                                   get: { Double(current) },
+                                   set: { store.vectorOptions.threshold = Int($0) }),
+                               range: 1...255, step: 1,
+                               readout: "\(current)")
+                    }
+                }
+
                 if store.vectorInColor {
                     slider("Colores",
                            value: Binding(

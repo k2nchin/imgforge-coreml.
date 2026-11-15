@@ -83,6 +83,7 @@ final class ForgeStore {
         static let format = "forge.format"
         static let quality = "forge.quality"
         static let dpi = "forge.dpi"
+        static let threshold = "forge.threshold"
     }
 
     private var restoring = false
@@ -104,6 +105,7 @@ final class ForgeStore {
         d.set(export.format.rawValue, forKey: Key.format)
         d.set(export.quality, forKey: Key.quality)
         d.set(export.dpi, forKey: Key.dpi)
+        d.set(vectorOptions.threshold ?? -1, forKey: Key.threshold)
     }
 
     private func restore() {
@@ -134,6 +136,8 @@ final class ForgeStore {
         if q > 0 { export.quality = q }
         let dpi = d.double(forKey: Key.dpi)
         if dpi >= 36 { export.dpi = dpi }
+        let th = d.integer(forKey: Key.threshold)
+        vectorOptions.threshold = th > 0 ? th : nil
         let corner = Float(d.double(forKey: Key.corner))
         if corner >= 20 { vectorOptions.cornerAngle = corner }
         paletteCount = max(2, min(16, d.integer(forKey: Key.palette)))

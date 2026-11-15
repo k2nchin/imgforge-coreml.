@@ -259,6 +259,50 @@ final class ContourTracerTests: XCTestCase {
                              "Un cuadrado de 60×60 en 100×100 cubre ~0.36")
     }
 
+    /// La prueba de fuego: siguiendo centros de píxel, un cuadrado se
+    /// simplifica a algo con las esquinas cortadas. Siguiendo la frontera,
+    /// quedan exactamente cuatro vértices en las esquinas reales.
+    func testSquareSimplifiesToFourExactCorners() throws {
+        let cg = mask { ctx, _ in
+            ctx.fill(CGRect(x: 20, y: 20, width: 60, height: 60))
+        }
+        let contour = try XCTUnwrap(try ContourTracer.trace(mask: cg).first)
+        let simple = ContourTracer.simplify(contour.points, epsilon: 0.004)
+
+        XCTAssertEqual(simple.count, 4, "Un cuadrado son cuatro vértices")
+
+        // Cada vértice debe caer sobre una esquina real, a menos de 1 px.
+        let expected: [SIMD2<Float>] = [
+            SIMD2(0.2, 0.2), SIMD2(0.8, 0.2), SIMD2(0.8, 0.8), SIMD2(0.2, 0.8)
+        ]
+        for corner in expected {
+            let nearest = simple.map { simd_length($0 - corner) }.min() ?? 1
+            XCTAssertLessThan(nearest, 0.015,
+                              "Falta un vértice cerca de \(corner)")
+        }
+    }
+
+    func testOtsuSeparatesTwoLevels() {
+        var bytes = [UInt8](repeating: 30, count: 500)
+        bytes.append(contentsOf: [UInt8](repeating: 220, count: 500))
+        let cut = ContourTracer.otsu(bytes)
+        XCTAssertGreaterThan(cut, 30)
+        XCTAssertLessThan(cut, 220)
+    }
+
+    /// Un umbral fijo de 128 falla en cuanto el fondo no es blanco puro.
+    func testOtsuHandlesGreyBackground() throws {
+        let cg = mask { ctx, size in
+            UIColor(white: 0.45, alpha: 1).setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+            UIColor(white: 0.95, alpha: 1).setFill()
+            ctx.fill(CGRect(x: 25, y: 25, width: 50, height: 50))
+        }
+        let contours = try ContourTracer.trace(mask: cg)
+        XCTAssertEqual(contours.count, 1,
+                       "Con fondo gris medio, un corte fijo no encuentra nada")
+    }
+
     func testDonutProducesTwoContours() throws {
         let cg = mask { ctx, _ in
             ctx.fillEllipse(in: CGRect(x: 10, y: 10, width: 80, height: 80))
