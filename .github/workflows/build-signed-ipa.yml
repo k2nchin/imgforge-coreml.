@@ -1,0 +1,229 @@
+name: Build signed IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      method:
+        description: "Método de exportación"
+        type: choice
+        default: development
+        options: [development, ad-hoc, app-store, enterprise]
+      upload_testflight:
+        description: "Subir a TestFlight (requiere método app-store y secrets ASC)"
+        type: boolean
+        default: false
+      bump_build:
+        description: "Usar el número de run como build number"
+        type: boolean
+        default: true
+
+concurrency:
+  group: build-signed-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 50
+
+    env:
+      KEYCHAIN: $RUNNER_TEMP/signing.keychain-db
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verificar secrets
+        env:
+          CERT: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          PASS: ${{ secrets.P12_PASSWORD }}
+          PROFILE: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+          TEAM: ${{ secrets.TEAM_ID }}
+        run: |
+          missing=""
+          [ -z "$CERT" ]    && missing="$missing BUILD_CERTIFICATE_BASE64"
+          [ -z "$PASS" ]    && missing="$missing P12_PASSWORD"
+          [ -z "$PROFILE" ] && missing="$missing PROVISIONING_PROFILE_BASE64"
+          [ -z "$TEAM" ]    && missing="$missing TEAM_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Faltan secrets:$missing — ver README, sección Firma."
+            exit 1
+          fi
+          echo "Secrets presentes."
+
+      - name: Importar certificado y perfil
+        env:
+          CERT: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          PASS: ${{ secrets.P12_PASSWORD }}
+          PROFILE: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
+
+          echo -n "$CERT" | base64 --decode -o "$CERT_PATH"
+          echo -n "$PROFILE" | base64 --decode -o "$PROFILE_PATH"
+
+          # Llavero efímero: vive solo durante este job.
+          EPHEMERAL=$(openssl rand -base64 24)
+          security create-keychain -p "$EPHEMERAL" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$EPHEMERAL" "$KEYCHAIN"
+
+          security import "$CERT_PATH" -P "$PASS" -A \
+            -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$EPHEMERAL" "$KEYCHAIN" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN"
+
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' \
+            /dev/stdin <<< "$(security cms -D -i "$PROFILE_PATH")")
+          cp "$PROFILE_PATH" \
+            ~/Library/MobileDevice/Provisioning\ Profiles/"$UUID".mobileprovision
+
+          NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' \
+            /dev/stdin <<< "$(security cms -D -i "$PROFILE_PATH")")
+          echo "PROFILE_NAME=$NAME" >> "$GITHUB_ENV"
+          echo "Perfil importado: $NAME ($UUID)"
+
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generar proyecto
+        env:
+          TEAM: ${{ secrets.TEAM_ID }}
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec project.yml
+
+      - name: Archive firmado
+        env:
+          TEAM: ${{ secrets.TEAM_ID }}
+          BUMP: ${{ github.event.inputs.bump_build }}
+        run: |
+          set -euo pipefail
+          BUILD_NUMBER=1
+          [ "$BUMP" = "true" ] && BUILD_NUMBER="${{ github.run_number }}"
+
+          xcodebuild archive \
+            -project ImgForge.xcodeproj \
+            -scheme ImgForge \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/ImgForge.xcarchive \
+            -allowProvisioningUpdates \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            DEVELOPMENT_TEAM="$TEAM" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            CODE_SIGNING_REQUIRED=YES \
+            CODE_SIGNING_ALLOWED=YES \
+            | tee build.log | xcpretty || {
+              grep -E "error:" build.log | head -40
+              exit 1
+            }
+
+      - name: Escribir ExportOptions
+        env:
+          TEAM: ${{ secrets.TEAM_ID }}
+          METHOD: ${{ github.event.inputs.method }}
+        run: |
+          set -euo pipefail
+          cat > build/ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>${METHOD}</string>
+            <key>teamID</key>
+            <string>${TEAM}</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>compileBitcode</key>
+            <false/>
+            <key>uploadSymbols</key>
+            <true/>
+            <key>destination</key>
+            <string>export</string>
+          </dict>
+          </plist>
+          EOF
+          cat build/ExportOptions.plist
+
+      - name: Exportar IPA
+        run: |
+          set -euo pipefail
+          xcodebuild -exportArchive \
+            -archivePath build/ImgForge.xcarchive \
+            -exportOptionsPlist build/ExportOptions.plist \
+            -exportPath build/export \
+            -allowProvisioningUpdates \
+            | tee export.log | xcpretty || {
+              grep -E "error:" export.log | head -30
+              exit 1
+            }
+          ls -lh build/export/
+
+      - name: Verificar firma
+        run: |
+          set -euo pipefail
+          IPA=$(ls build/export/*.ipa | head -1)
+          rm -rf build/verify && mkdir -p build/verify
+          unzip -q "$IPA" -d build/verify
+          APP=$(ls -d build/verify/Payload/*.app | head -1)
+          codesign -dv --verbose=4 "$APP" 2>&1 | head -20
+          echo "---"
+          codesign --verify --deep --strict "$APP" && echo "Firma válida."
+
+      - name: Subir a TestFlight
+        if: ${{ github.event.inputs.upload_testflight == 'true' && github.event.inputs.method == 'app-store' }}
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_PRIVATE_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_KEY_BASE64" ]; then
+            echo "::error::Faltan los secrets de App Store Connect."
+            exit 1
+          fi
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo -n "$ASC_KEY_BASE64" | base64 --decode \
+            -o ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+
+          IPA=$(ls build/export/*.ipa | head -1)
+          xcrun altool --upload-app -f "$IPA" -t ios \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+      - name: Subir artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImgForge-signed-${{ github.event.inputs.method }}
+          path: build/export/*.ipa
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Logs si falla
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-build-logs
+          path: |
+            build.log
+            export.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Limpiar llavero
+        if: always()
+        run: |
+          security delete-keychain "$KEYCHAIN" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/profile.mobileprovision"
+          rm -rf ~/.appstoreconnect/private_keys
