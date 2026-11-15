@@ -25,6 +25,12 @@ targets:
     platform: iOS
     sources:
       - path: ImgForge
+        excludes:
+          - "Resources/RealESRGAN.mlmodelc"
+      # El modelo lo deposita el workflow; se copia tal cual, ya compilado.
+      - path: ImgForge/Resources/RealESRGAN.mlmodelc
+        type: folder
+        optional: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aparataje.imgforge

@@ -20,6 +20,10 @@ on:
       - "project.yml"
       - ".github/workflows/build-ipa.yml"
 
+permissions:
+  contents: read
+  actions: read
+
 concurrency:
   group: build-ipa-${{ github.ref }}
   cancel-in-progress: true
@@ -39,6 +43,37 @@ jobs:
           xcodebuild -version
           echo "SDKs:"
           xcodebuild -showsdks | grep -i iphoneos || true
+
+      - name: Incorporar el modelo Core ML
+        if: ${{ github.event.inputs.include_model == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUN=$(gh run list \
+            --workflow "Convert Real-ESRGAN to Core ML" \
+            --status success --limit 1 \
+            --json databaseId --jq '.[0].databaseId')
+
+          if [ -z "$RUN" ] || [ "$RUN" = "null" ]; then
+            echo "::error::No hay ningún run exitoso de conversión. Corre ese workflow primero."
+            exit 1
+          fi
+          echo "Tomando el modelo del run $RUN"
+
+          gh run download "$RUN" -D model
+          find model -name '*.zip' -exec unzip -qo {} -d model \;
+
+          MODEL=$(find model -maxdepth 3 -name 'RealESRGAN.mlmodelc' -type d | head -1)
+          if [ -z "$MODEL" ]; then
+            echo "::error::El artifact no contiene RealESRGAN.mlmodelc"
+            find model -maxdepth 3 | head -20
+            exit 1
+          fi
+
+          rm -rf ImgForge/Resources/RealESRGAN.mlmodelc
+          cp -R "$MODEL" ImgForge/Resources/
+          du -sh ImgForge/Resources/RealESRGAN.mlmodelc
 
       - name: Install XcodeGen
         run: brew install xcodegen
