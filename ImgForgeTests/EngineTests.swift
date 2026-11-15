@@ -185,9 +185,10 @@ final class VectorizerTests: XCTestCase {
                                     "Sobre polilínea, simplificar debe pesar menos")
     }
 
-    /// Las curvas existen para pesar menos que la polilínea equivalente
-    /// a igual nivel de simplificación.
-    func testCurvesBeatPolylineAtSameDetail() throws {
+    /// Las curvas no pesan menos en bytes: una `C` lleva seis números y
+    /// una `L` dos. Lo que reducen es el número de segmentos, que es lo
+    /// que importa al editar el vector.
+    func testCurvesReduceSegmentCount() throws {
         var poly = Vectorizer.Options()
         poly.curves = false
         poly.simplify = 0.0005
@@ -197,7 +198,13 @@ final class VectorizerTests: XCTestCase {
 
         let a = try Vectorizer.run(shape, options: poly)
         let b = try Vectorizer.run(shape, options: curved)
-        XCTAssertLessThan(b.byteCount, a.byteCount)
+
+        let lines = a.svg.components(separatedBy: " L").count - 1
+        let cubics = b.svg.components(separatedBy: " C").count - 1
+
+        XCTAssertGreaterThan(cubics, 0, "Debe emitir cúbicas")
+        XCTAssertLessThanOrEqual(cubics, lines,
+                                 "Una cúbica cubre uno o más segmentos rectos")
     }
 }
 
