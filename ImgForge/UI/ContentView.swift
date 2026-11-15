@@ -208,6 +208,13 @@ struct ContentView: View {
                 }
 
                 Toggle("Curvas Bézier", isOn: $store.vectorOptions.curves)
+
+                if store.vectorOptions.curves {
+                    slider("Esquinas",
+                           value: $store.vectorOptions.cornerAngle.asDouble,
+                           range: 20...140, step: 5,
+                           readout: "\(Int(store.vectorOptions.cornerAngle))°")
+                }
                 Toggle("Invertir", isOn: $store.vectorOptions.invert)
                 Toggle("Solo contorno", isOn: $store.vectorOptions.strokeOnly)
 

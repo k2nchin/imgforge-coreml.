@@ -6,13 +6,83 @@ enum BezierFitter {
 
     typealias Cubic = (SIMD2<Float>, SIMD2<Float>, SIMD2<Float>, SIMD2<Float>)
 
-    static func fit(_ points: [SIMD2<Float>], error: Float) -> String {
+    /// Ajusta un contorno cerrado.
+    ///
+    /// `cornerAngle` es el giro mínimo, en grados, que convierte un punto en
+    /// esquina. En una esquina el ajuste se parte: las tangentes a cada lado
+    /// quedan libres y el vértice sale afilado, en vez de redondeado. Es lo
+    /// que hace el deslizador Esquinas de Image Trace, y es la diferencia
+    /// entre un logo que parece trazado y uno que parece derretido.
+    static func fit(_ points: [SIMD2<Float>],
+                    error: Float,
+                    cornerAngle: Float = 60) -> String {
         guard points.count > 3 else { return polyline(points) }
-        var out = "M\(fmt(points[0].x)) \(fmt(points[0].y))"
-        let t1 = normalize(points[1] - points[0])
-        let t2 = normalize(points[points.count - 2] - points[points.count - 1])
-        fitCubic(points, 0, points.count - 1, t1, t2, error * error, &out, depth: 0)
+
+        let errSq = error * error
+        let corners = detectCorners(points, threshold: cornerAngle)
+
+        guard corners.count >= 2 else {
+            // Curva sin esquinas: un solo ajuste cerrado.
+            var out = "M\(fmt(points[0].x)) \(fmt(points[0].y))"
+            let t1 = normalize(points[1] - points[0])
+            let t2 = normalize(points[points.count - 2] - points[points.count - 1])
+            fitCubic(points, 0, points.count - 1, t1, t2, errSq, &out, depth: 0)
+            return out + " Z"
+        }
+
+        let start = points[corners[0]]
+        var out = "M\(fmt(start.x)) \(fmt(start.y))"
+
+        for k in corners.indices {
+            let a = corners[k]
+            let b = corners[(k + 1) % corners.count]
+            let chain = subchain(points, from: a, to: b)
+            guard chain.count >= 2 else { continue }
+
+            if chain.count == 2 {
+                let e = chain[1]
+                out += " L\(fmt(e.x)) \(fmt(e.y))"
+                continue
+            }
+
+            let t1 = normalize(chain[1] - chain[0])
+            let t2 = normalize(chain[chain.count - 2] - chain[chain.count - 1])
+            fitCubic(chain, 0, chain.count - 1, t1, t2, errSq, &out, depth: 0)
+        }
         return out + " Z"
+    }
+
+    /// Un vértice es esquina cuando la dirección gira más que el umbral.
+    private static func detectCorners(_ p: [SIMD2<Float>],
+                                      threshold: Float) -> [Int] {
+        let n = p.count
+        guard n >= 4 else { return [] }
+
+        let limit = cos(threshold * .pi / 180)
+        var corners: [Int] = []
+
+        for i in 0..<n {
+            let prev = p[(i - 1 + n) % n]
+            let next = p[(i + 1) % n]
+            let v1 = normalize(p[i] - prev)
+            let v2 = normalize(next - p[i])
+            guard simd_length(v1) > 0, simd_length(v2) > 0 else { continue }
+
+            // dot = 1 es recto; cuanto menor, más cerrado el giro.
+            if simd_dot(v1, v2) < limit {
+                // Dos esquinas pegadas son ruido de rasterizado: basta una.
+                if let last = corners.last, i - last < 2 { continue }
+                corners.append(i)
+            }
+        }
+        return corners
+    }
+
+    /// Tramo cerrado de `from` a `to`, dando la vuelta si hace falta.
+    private static func subchain(_ p: [SIMD2<Float>],
+                                 from a: Int, to b: Int) -> [SIMD2<Float>] {
+        if a < b { return Array(p[a...b]) }
+        return Array(p[a...]) + Array(p[0...b])
     }
 
     private static func fitCubic(_ p: [SIMD2<Float>], _ first: Int, _ last: Int,

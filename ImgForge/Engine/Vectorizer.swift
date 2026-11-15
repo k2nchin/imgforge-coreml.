@@ -16,6 +16,13 @@ enum Vectorizer {
         var colorMode: ColorMode = .mono
         var curves: Bool = true
         var curveError: Float = 0.004
+        /// Giro mínimo en grados para tratar un vértice como esquina.
+        var cornerAngle: Float = 60
+        /// Rutas contiguas: ensancha cada capa un píxel para que no quede
+        /// una grieta entre colores vecinos.
+        var abutting: Bool = true
+        /// Mediana previa, contra el moteado del borde antialiasado.
+        var denoise: Bool = true
         var invert: Bool = false
         var strokeOnly: Bool = false
         var strokeWidth: Double = 1.0
@@ -40,11 +47,14 @@ enum Vectorizer {
 
         switch options.colorMode {
         case .mono:
-            let prepared = try preprocess(cg, invert: options.invert)
+            let prepared = try preprocess(cg, invert: options.invert,
+                                          denoise: options.denoise)
             groups.append((options.monoInk, try trace(prepared, options: options)))
 
         case .palette(let k):
-            let layers = try ColorQuantizer.layers(from: cg, count: k)
+            let layers = try ColorQuantizer.layers(from: cg, count: k,
+                                                   dilate: options.abutting,
+                                                   denoise: options.denoise)
             for layer in layers {
                 if isCancelled() { throw ForgeError.cancelled }
                 guard let paths = try? trace(layer.mask, options: options),
@@ -80,7 +90,9 @@ enum Vectorizer {
             guard pts.count >= 3 else { continue }
 
             out.append(options.curves
-                       ? BezierFitter.fit(pts, error: options.curveError)
+                       ? BezierFitter.fit(pts,
+                                          error: options.curveError,
+                                          cornerAngle: options.cornerAngle)
                        : polyline(pts))
         }
         return out
@@ -88,9 +100,17 @@ enum Vectorizer {
 
     /// Monocromo y, por defecto, invertido: el trazador busca regiones
     /// en blanco, y en un logo la tinta es lo oscuro.
-    private static func preprocess(_ cg: CGImage, invert: Bool) throws -> CGImage {
+    private static func preprocess(_ cg: CGImage,
+                                   invert: Bool,
+                                   denoise: Bool) throws -> CGImage {
+        var input = CIImage(cgImage: cg)
+        if denoise {
+            let m = CIFilter.median()
+            m.inputImage = input
+            if let out = m.outputImage { input = out.cropped(to: input.extent) }
+        }
         let mono = CIFilter.photoEffectMono()
-        mono.inputImage = CIImage(cgImage: cg)
+        mono.inputImage = input
         guard var out = mono.outputImage else { throw ForgeError.filterFailed("mono") }
 
         if !invert {

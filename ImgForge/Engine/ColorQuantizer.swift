@@ -1,4 +1,6 @@
 import UIKit
+import CoreImage
+import CoreImage.CIFilterBuiltins
 import simd
 
 /// Cuantiza una imagen a N colores y produce una máscara binaria por color.
@@ -11,10 +13,22 @@ enum ColorQuantizer {
         let coverage: Float
     }
 
-    static func layers(from cg: CGImage, count k: Int, maxEdge: Int = 512) throws -> [Layer] {
+    /// - Parameters:
+    ///   - dilate: ensancha cada máscara un píxel. Sin esto, dos regiones
+    ///     vecinas dejan una grieta blanca entre sus bordes al rasterizar
+    ///     el SVG. Image Trace las llama rutas contiguas.
+    ///   - denoise: mediana 3×3 antes de cuantizar. Los píxeles del borde
+    ///     antialiasado son mezclas que caen en grupos arbitrarios y
+    ///     producen moteado; la mediana los resuelve hacia su vecindad.
+    static func layers(from cg: CGImage,
+                       count k: Int,
+                       maxEdge: Int = 512,
+                       dilate: Bool = true,
+                       denoise: Bool = true) throws -> [Layer] {
         let k = max(2, min(32, k))
 
-        let (pixels, w, h) = try sample(cg, maxEdge: maxEdge)
+        let source = denoise ? (median(cg) ?? cg) : cg
+        let (pixels, w, h) = try sample(source, maxEdge: maxEdge)
         guard !pixels.isEmpty else { throw ForgeError.decodeFailed }
 
         let labs = pixels.map(rgbToLab)
@@ -61,7 +75,9 @@ enum ColorQuantizer {
             let n = Float(members.count)
             r /= n; g /= n; b /= n
 
-            guard let mask = buildMask(assign: assign, target: c, width: w, height: h) else {
+            guard let mask = buildMask(assign: assign, target: c,
+                                       width: w, height: h,
+                                       dilate: dilate) else {
                 continue
             }
 
@@ -135,10 +151,14 @@ enum ColorQuantizer {
     }
 
     private static func buildMask(assign: [Int], target: Int,
-                                  width: Int, height: Int) -> CGImage? {
+                                  width: Int, height: Int,
+                                  dilate: Bool) -> CGImage? {
         var bytes = [UInt8](repeating: 0, count: width * height)
         for i in assign.indices where assign[i] == target {
             bytes[i] = 255
+        }
+        if dilate {
+            bytes = grow(bytes, width: width, height: height)
         }
         return bytes.withUnsafeMutableBytes { ptr -> CGImage? in
             guard let base = ptr.baseAddress,
@@ -150,6 +170,35 @@ enum ColorQuantizer {
                   ) else { return nil }
             return ctx.makeImage()
         }
+    }
+
+    /// Dilatación 3×3: cada píxel activo contagia a sus vecinos.
+    private static func grow(_ src: [UInt8], width: Int, height: Int) -> [UInt8] {
+        var out = src
+        for y in 0..<height {
+            for x in 0..<width {
+                guard src[y * width + x] == 0 else { continue }
+                var touch = false
+                for dy in -1...1 where !touch {
+                    for dx in -1...1 {
+                        let nx = x + dx, ny = y + dy
+                        guard nx >= 0, ny >= 0, nx < width, ny < height else { continue }
+                        if src[ny * width + nx] == 255 { touch = true; break }
+                    }
+                }
+                if touch { out[y * width + x] = 255 }
+            }
+        }
+        return out
+    }
+
+    private static let ciContext = CIContext(options: [.cacheIntermediates: false])
+
+    private static func median(_ cg: CGImage) -> CGImage? {
+        let f = CIFilter.median()
+        f.inputImage = CIImage(cgImage: cg)
+        guard let out = f.outputImage else { return nil }
+        return ciContext.createCGImage(out, from: CIImage(cgImage: cg).extent)
     }
 
     private static func dist(_ a: SIMD3<Float>, _ b: SIMD3<Float>) -> Float {

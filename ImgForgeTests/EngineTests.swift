@@ -294,3 +294,78 @@ final class ContourTracerTests: XCTestCase {
         XCTAssertGreaterThan(contours[0].points.count, 100)
     }
 }
+
+final class CornerFittingTests: XCTestCase {
+
+    /// Un cuadrado muestreado densamente debe conservar cuatro esquinas
+    /// afiladas. Sin detección de esquinas el ajuste las redondea y el
+    /// logo sale derretido.
+    func testSquareKeepsFourCorners() {
+        var pts: [SIMD2<Float>] = []
+        let n = 40
+        for i in 0..<n { pts.append(SIMD2(0.1 + 0.8 * Float(i) / Float(n), 0.1)) }
+        for i in 0..<n { pts.append(SIMD2(0.9, 0.1 + 0.8 * Float(i) / Float(n))) }
+        for i in 0..<n { pts.append(SIMD2(0.9 - 0.8 * Float(i) / Float(n), 0.9)) }
+        for i in 0..<n { pts.append(SIMD2(0.1, 0.9 - 0.8 * Float(i) / Float(n))) }
+
+        let d = BezierFitter.fit(pts, error: 0.004, cornerAngle: 60)
+        let segments = (d.components(separatedBy: " C").count - 1)
+            + (d.components(separatedBy: " L").count - 1)
+
+        XCTAssertGreaterThanOrEqual(segments, 4,
+                                    "Cuatro lados, cuatro tramos como mínimo")
+        XCTAssertLessThanOrEqual(segments, 12,
+                                 "Los lados rectos no deben fragmentarse")
+    }
+
+    /// Un círculo no tiene esquinas: debe salir como una curva continua
+    /// aunque la detección esté activa.
+    func testCircleHasNoCorners() {
+        let pts = (0..<120).map { i -> SIMD2<Float> in
+            let a = Float(i) / 120 * 2 * .pi
+            return SIMD2(0.5 + 0.4 * cos(a), 0.5 + 0.4 * sin(a))
+        }
+        let d = BezierFitter.fit(pts, error: 0.004, cornerAngle: 60)
+        XCTAssertEqual(d.components(separatedBy: " L").count - 1, 0,
+                       "Un círculo no debe producir segmentos rectos")
+    }
+
+    /// Bajar el umbral detecta más esquinas, igual que subir el
+    /// deslizador Esquinas de Image Trace.
+    func testLowerThresholdFindsMoreCorners() {
+        let pts = (0..<80).map { i -> SIMD2<Float> in
+            let a = Float(i) / 80 * 2 * .pi
+            let r: Float = i % 10 == 0 ? 0.45 : 0.3     // estrella irregular
+            return SIMD2(0.5 + r * cos(a), 0.5 + r * sin(a))
+        }
+        let strict = BezierFitter.fit(pts, error: 0.002, cornerAngle: 120)
+        let loose = BezierFitter.fit(pts, error: 0.002, cornerAngle: 30)
+
+        func segments(_ s: String) -> Int {
+            (s.components(separatedBy: " C").count - 1)
+                + (s.components(separatedBy: " L").count - 1)
+        }
+        XCTAssertGreaterThanOrEqual(segments(loose), segments(strict))
+    }
+}
+
+final class AbuttingTests: XCTestCase {
+
+    func testDilationCoversTheSeam() throws {
+        let cg = renderAtScale1(CGSize(width: 80, height: 80)) { ctx in
+            UIColor.red.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 40, height: 80))
+            UIColor.blue.setFill()
+            ctx.fill(CGRect(x: 40, y: 0, width: 40, height: 80))
+        }.cgImage!
+
+        let plain = try ColorQuantizer.layers(from: cg, count: 2, dilate: false)
+        let abut = try ColorQuantizer.layers(from: cg, count: 2, dilate: true)
+
+        let plainCoverage = plain.reduce(0) { $0 + $1.coverage }
+        let abutCoverage = abut.reduce(0) { $0 + $1.coverage }
+
+        XCTAssertGreaterThan(abutCoverage, plainCoverage,
+                             "Las capas contiguas se solapan, no dejan grieta")
+    }
+}

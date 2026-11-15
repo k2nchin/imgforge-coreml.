@@ -78,6 +78,7 @@ final class ForgeStore {
         static let simplify = "forge.simplify"
         static let color = "forge.color"
         static let palette = "forge.palette"
+        static let corner = "forge.corner"
     }
 
     private var restoring = false
@@ -95,6 +96,7 @@ final class ForgeStore {
         d.set(Double(vectorOptions.simplify), forKey: Key.simplify)
         d.set(vectorInColor, forKey: Key.color)
         d.set(paletteCount, forKey: Key.palette)
+        d.set(Double(vectorOptions.cornerAngle), forKey: Key.corner)
     }
 
     private func restore() {
@@ -118,6 +120,8 @@ final class ForgeStore {
         vectorOptions.curves = d.bool(forKey: Key.curves)
         let simplify = Float(d.double(forKey: Key.simplify))
         if simplify > 0 { vectorOptions.simplify = simplify }
+        let corner = Float(d.double(forKey: Key.corner))
+        if corner >= 20 { vectorOptions.cornerAngle = corner }
         paletteCount = max(2, min(16, d.integer(forKey: Key.palette)))
         vectorOptions.colorMode = d.bool(forKey: Key.color) ? .palette(paletteCount) : .mono
     }

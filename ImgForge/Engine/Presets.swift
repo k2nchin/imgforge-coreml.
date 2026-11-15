@@ -15,12 +15,14 @@ struct Preset: Identifiable, Hashable {
         Preset(id: "logo_vector", name: "Logo a vector", symbol: "scribble.variable",
                kind: .vector(Vectorizer.Options(
                    simplify: 0.0015, minArea: 0.0008,
-                   colorMode: .mono, curves: true))),
+                   colorMode: .mono, curves: true,
+                   cornerAngle: 50))),
 
         Preset(id: "art_color", name: "Arte a color", symbol: "paintpalette",
                kind: .vector(Vectorizer.Options(
                    simplify: 0.0025, minArea: 0.0004,
-                   colorMode: .palette(8), curves: true))),
+                   colorMode: .palette(8), curves: true,
+                   cornerAngle: 70))),
 
         Preset(id: "photo_2x", name: "Foto 2× nítida", symbol: "photo",
                kind: .upscale(Upscaler.Options(
