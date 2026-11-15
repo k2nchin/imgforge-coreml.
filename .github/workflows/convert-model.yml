@@ -6,11 +6,13 @@ on:
       variant:
         description: "Modelo a convertir"
         type: choice
-        default: realesrgan-x4plus
+        default: realesr-general-x4v3
         options:
+          - realesr-general-x4v3
           - realesrgan-x4plus
           - realesrgan-x4plus-anime
           - realesrgan-x2plus
+          - realesr-animevideov3
       tile:
         description: "Tamano de entrada fijo (px)"
         default: "512"
@@ -72,6 +74,10 @@ jobs:
               URL="https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth" ;;
             realesrgan-x2plus)
               URL="https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth" ;;
+            realesr-general-x4v3)
+              URL="https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth" ;;
+            realesr-animevideov3)
+              URL="https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth" ;;
             *) echo "Variante desconocida: $VARIANT" >&2; exit 1 ;;
           esac
           echo "Descargando $URL"

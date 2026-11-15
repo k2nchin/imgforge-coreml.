@@ -16,10 +16,15 @@ from pathlib import Path
 
 LOG = logging.getLogger("convert")
 
+# RRDBNet es la red de Real-ESRGAN clasica. SRVGGNetCompact es la red
+# compacta de los modelos "general", mucho mas pequena y pensada para
+# degradaciones reales de fotografia, no sinteticas.
 ARCHS = {
-    "realesrgan-x4plus":       dict(num_block=23, scale=4),
-    "realesrgan-x4plus-anime": dict(num_block=6,  scale=4),
-    "realesrgan-x2plus":       dict(num_block=23, scale=2),
+    "realesrgan-x4plus":       dict(kind="rrdb",    num_block=23, scale=4),
+    "realesrgan-x4plus-anime": dict(kind="rrdb",    num_block=6,  scale=4),
+    "realesrgan-x2plus":       dict(kind="rrdb",    num_block=23, scale=2),
+    "realesr-general-x4v3":    dict(kind="compact", num_conv=32,  scale=4),
+    "realesr-animevideov3":    dict(kind="compact", num_conv=16,  scale=4),
 }
 
 
@@ -39,17 +44,32 @@ def parse_args():
     return p.parse_args()
 
 
-def load_model(weights: Path, variant: str):
-    import torch
+def build_net(cfg):
     from basicsr.archs.rrdbnet_arch import RRDBNet
 
-    cfg = ARCHS[variant]
-    LOG.info("Arquitectura: num_block=%d scale=%d", cfg["num_block"], cfg["scale"])
+    if cfg["kind"] == "rrdb":
+        LOG.info("Arquitectura RRDBNet: num_block=%d scale=%d",
+                 cfg["num_block"], cfg["scale"])
+        return RRDBNet(
+            num_in_ch=3, num_out_ch=3, num_feat=64,
+            num_block=cfg["num_block"], num_grow_ch=32, scale=cfg["scale"],
+        )
 
-    net = RRDBNet(
+    from basicsr.archs.srvgg_arch import SRVGGNetCompact
+
+    LOG.info("Arquitectura SRVGGNetCompact: num_conv=%d scale=%d",
+             cfg["num_conv"], cfg["scale"])
+    return SRVGGNetCompact(
         num_in_ch=3, num_out_ch=3, num_feat=64,
-        num_block=cfg["num_block"], num_grow_ch=32, scale=cfg["scale"],
+        num_conv=cfg["num_conv"], upscale=cfg["scale"], act_type="prelu",
     )
+
+
+def load_model(weights: Path, variant: str):
+    import torch
+
+    cfg = ARCHS[variant]
+    net = build_net(cfg)
 
     LOG.info("Cargando pesos: %s", weights)
     blob = torch.load(weights, map_location="cpu", weights_only=True)
