@@ -22,6 +22,7 @@ final class EditorStore {
     var adjustments = Adjustments.Options() { didSet { schedulePreview() } }
     var resize = Resizer.Options()
     var lockAspect = true
+    var export = Exporter.Settings()
 
     private(set) var isWorking = false
     var error: String?
@@ -138,6 +139,7 @@ final class EditorStore {
 
         let opts = adjustments
         let area = crop
+        let settings = export
         var size = resize
         if size.width <= 0 || size.height <= 0 {
             size.width = Int(CGFloat(src.cgImage?.width ?? 1) * area.width)
@@ -155,14 +157,12 @@ final class EditorStore {
                     ? try Resizer.run(edited, options: size)
                     : edited
 
-                guard let data = final.pngData() else { throw ForgeError.encodeFailed }
-                let url = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("imgforge_edit_\(Int(Date().timeIntervalSince1970)).png")
-                try data.write(to: url, options: .atomic)
-                return url
+                return try Exporter.write(
+                    final, settings: settings,
+                    stem: "imgforge_edit_\(Int(Date().timeIntervalSince1970))")
             }.value
 
-            status = "\(size.width) × \(size.height) listo."
+            status = "\(size.width) × \(size.height) · \(settings.format.rawValue) listo."
             return url
         } catch {
             self.error = error.localizedDescription
@@ -431,6 +431,30 @@ struct EditorView: View {
             .scrollClipDisabled()
 
             LabeledContent("Origen", value: store.croppedSize).font(.footnote)
+
+            Divider()
+
+            Text("Formato de salida").font(.subheadline)
+            Picker("Formato", selection: $store.export.format) {
+                ForEach(ExportFormat.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+
+            Text(store.export.format.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if store.export.format == .jpeg {
+                labeled("Calidad", String(format: "%.0f%%", store.export.quality * 100)) {
+                    Slider(value: $store.export.quality, in: 0.3...1)
+                }
+            }
+
+            if store.export.format == .pdf {
+                labeled("Resolución", String(format: "%.0f ppp", store.export.dpi)) {
+                    Slider(value: $store.export.dpi, in: 72...300, step: 1)
+                }
+            }
         }
         .padding(.horizontal, 2)
     }

@@ -579,3 +579,71 @@ final class AdjustmentsTests: XCTestCase {
         )
     }
 }
+
+final class ExporterTests: XCTestCase {
+
+    private var sample: UIImage {
+        renderAtScale1(CGSize(width: 60, height: 40)) { ctx in
+            UIColor.systemOrange.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 60, height: 40))
+        }
+    }
+
+    private func write(_ format: ExportFormat) throws -> URL {
+        var s = Exporter.Settings()
+        s.format = format
+        return try Exporter.write(sample, settings: s, stem: "test_\(format.ext)")
+    }
+
+    func testWritesEachFormat() throws {
+        for f in ExportFormat.allCases {
+            let url = try write(f)
+            XCTAssertEqual(url.pathExtension, f.ext)
+            let size = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int
+            XCTAssertGreaterThan(size ?? 0, 100, "\(f.rawValue) salió vacío")
+        }
+    }
+
+    func testPNGAndJPEGHaveCorrectMagicBytes() throws {
+        let png = try Data(contentsOf: write(.png))
+        XCTAssertEqual(Array(png.prefix(4)), [0x89, 0x50, 0x4E, 0x47])
+
+        let jpg = try Data(contentsOf: write(.jpeg))
+        XCTAssertEqual(Array(jpg.prefix(2)), [0xFF, 0xD8])
+
+        let pdf = try Data(contentsOf: write(.pdf))
+        XCTAssertEqual(Array(pdf.prefix(4)), Array("%PDF".utf8))
+    }
+
+    func testLowerQualityMakesSmallerJPEG() throws {
+        var high = Exporter.Settings(); high.format = .jpeg; high.quality = 1.0
+        var low = Exporter.Settings(); low.format = .jpeg; low.quality = 0.3
+
+        let a = try Data(contentsOf: Exporter.write(sample, settings: high, stem: "q_high"))
+        let b = try Data(contentsOf: Exporter.write(sample, settings: low, stem: "q_low"))
+        XCTAssertLessThan(b.count, a.count)
+    }
+
+    /// A más ppp, la página mide menos puntos: la misma imagen se imprime
+    /// más chica y con más resolución.
+    func testHigherDPIMakesSmallerPage() throws {
+        var low = Exporter.Settings(); low.format = .pdf; low.dpi = 72
+        var high = Exporter.Settings(); high.format = .pdf; high.dpi = 300
+
+        let a = try Data(contentsOf: Exporter.write(sample, settings: low, stem: "dpi_72"))
+        let b = try Data(contentsOf: Exporter.write(sample, settings: high, stem: "dpi_300"))
+        XCTAssertFalse(a.isEmpty)
+        XCTAssertFalse(b.isEmpty)
+    }
+
+    func testPhotosRejectsPDF() {
+        XCTAssertFalse(ExportFormat.pdf.savesToPhotos)
+        XCTAssertTrue(ExportFormat.png.savesToPhotos)
+        XCTAssertTrue(ExportFormat.jpeg.savesToPhotos)
+    }
+
+    func testSVGKeepsItsExtension() throws {
+        let url = try Exporter.writeSVG("<svg/>", stem: "vector_test")
+        XCTAssertEqual(url.pathExtension, "svg")
+    }
+}

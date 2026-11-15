@@ -105,7 +105,8 @@ struct ContentView: View {
                             Label("Guardar en Fotos", systemImage: "square.and.arrow.down")
                         }
                     }
-                    .disabled(store.result == nil || saving)
+                    .disabled(store.result == nil || saving
+                              || !store.export.format.savesToPhotos)
                 }
             }
             .safeAreaInset(edge: .bottom) {
@@ -220,6 +221,27 @@ struct ContentView: View {
 
                 LabeledContent("Salida", value: store.outputSize)
                     .font(.footnote)
+
+                Divider()
+
+                Picker("Formato", selection: $store.export.format) {
+                    ForEach(ExportFormat.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+
+                if store.export.format == .jpeg {
+                    slider("Calidad",
+                           value: $store.export.quality,
+                           range: 0.3...1, step: 0.05,
+                           readout: String(format: "%.0f%%", store.export.quality * 100))
+                }
+
+                if store.export.format == .pdf {
+                    slider("Resolución",
+                           value: $store.export.dpi,
+                           range: 72...300, step: 1,
+                           readout: String(format: "%.0f ppp", store.export.dpi))
+                }
             } else {
                 Toggle("Vectorizar a color", isOn: $store.vectorInColor)
 

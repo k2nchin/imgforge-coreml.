@@ -110,11 +110,19 @@ struct BatchView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Picker("Preset", selection: $preset) {
-                ForEach(Preset.all) { Text($0.name).tag($0) }
+            HStack {
+                Picker("Preset", selection: $preset) {
+                    ForEach(Preset.all) { Text($0.name).tag($0) }
+                }
+                .pickerStyle(.menu)
+
+                Spacer()
+
+                Picker("Formato", selection: $queue.export.format) {
+                    ForEach(ExportFormat.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.menu)
             }
-            .pickerStyle(.menu)
-            .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 10) {
                 Button(queue.isRunning ? "Detener" : "Procesar") {

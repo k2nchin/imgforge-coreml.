@@ -24,9 +24,10 @@ enum PhotoSaver {
 
     /// Solo imágenes: un SVG no es un asset válido para el carrete.
     static func save(urls: [URL]) async -> Outcome {
-        let images = urls.filter { $0.pathExtension.lowercased() != "svg" }
+        let allowed: Set<String> = ["png", "jpg", "jpeg", "heic"]
+        let images = urls.filter { allowed.contains($0.pathExtension.lowercased()) }
         guard !images.isEmpty else {
-            return .failed("Un SVG no se puede guardar en Fotos. Usa Compartir.")
+            return .failed("Fotos solo acepta imágenes. Para SVG o PDF, usa Compartir.")
         }
 
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)

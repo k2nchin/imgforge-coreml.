@@ -54,12 +54,15 @@ final class BatchQueue {
         }
     }
 
+    var export = Exporter.Settings()
+
     func start(preset: Preset) {
         guard !isRunning, !jobs.isEmpty else { return }
         isRunning = true
 
         task = Task { [weak self] in
             guard let self else { return }
+            let export = self.export
             let pending = self.jobs.indices.filter { self.jobs[$0].state != .done }
 
             for index in pending {
@@ -71,7 +74,8 @@ final class BatchQueue {
                 let name = self.jobs[index].name
 
                 do {
-                    let url = try await Self.work(image, name: name, preset: preset)
+                    let url = try await Self.work(image, name: name,
+                                                  preset: preset, export: export)
                     guard !Task.isCancelled, index < self.jobs.count else { break }
                     self.jobs[index].output = url
                     self.jobs[index].state = .done
@@ -87,10 +91,12 @@ final class BatchQueue {
 
     private nonisolated static func work(_ image: UIImage,
                                          name: String,
-                                         preset: Preset) async throws -> URL {
+                                         preset: Preset,
+                                         export: Exporter.Settings) async throws -> URL {
         try await Task.detached(priority: .utility) {
             let stem = (name as NSString).deletingPathExtension
-            return try ForgeRunner.process(image, preset: preset, stem: stem)
+            return try ForgeRunner.process(image, preset: preset,
+                                           stem: stem, export: export)
         }.value
     }
 }

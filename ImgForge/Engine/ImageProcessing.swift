@@ -17,28 +17,21 @@ extension UIImage {
 /// Compartido por la app, la cola de lote y la Share Extension.
 enum ForgeRunner {
 
-    static func process(_ image: UIImage, preset: Preset, stem: String? = nil) throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("imgforge", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-
+    static func process(_ image: UIImage,
+                        preset: Preset,
+                        stem: String? = nil,
+                        export: Exporter.Settings = Exporter.Settings()) throws -> URL {
         let name = stem ?? "imgforge_\(Int(Date().timeIntervalSince1970))"
 
         switch preset.kind {
         case .upscale(let opts):
             let out = try Upscaler.run(image, options: opts)
-            guard let data = out.pngData() else { throw ForgeError.encodeFailed }
-            let url = dir.appendingPathComponent("\(name)_x\(Int(opts.scale)).png")
-            do { try data.write(to: url, options: .atomic) }
-            catch { throw ForgeError.writeFailed(error.localizedDescription) }
-            return url
+            return try Exporter.write(out, settings: export,
+                                      stem: "\(name)_x\(Int(opts.scale))")
 
         case .vector(let opts):
             let result = try Vectorizer.run(image, options: opts)
-            let url = dir.appendingPathComponent("\(name).svg")
-            do { try result.svg.write(to: url, atomically: true, encoding: .utf8) }
-            catch { throw ForgeError.writeFailed(error.localizedDescription) }
-            return url
+            return try Exporter.writeSVG(result.svg, stem: name)
         }
     }
 }

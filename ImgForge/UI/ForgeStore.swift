@@ -39,6 +39,7 @@ final class ForgeStore {
         didSet { scheduleDraft(); persist() }
     }
     var vectorOptions = Vectorizer.Options() { didSet { persist() } }
+    var export = Exporter.Settings() { didSet { persist() } }
 
     /// `ColorMode` no se edita bien desde un control; se expone en dos piezas.
     var vectorInColor: Bool {
@@ -79,6 +80,9 @@ final class ForgeStore {
         static let color = "forge.color"
         static let palette = "forge.palette"
         static let corner = "forge.corner"
+        static let format = "forge.format"
+        static let quality = "forge.quality"
+        static let dpi = "forge.dpi"
     }
 
     private var restoring = false
@@ -97,6 +101,9 @@ final class ForgeStore {
         d.set(vectorInColor, forKey: Key.color)
         d.set(paletteCount, forKey: Key.palette)
         d.set(Double(vectorOptions.cornerAngle), forKey: Key.corner)
+        d.set(export.format.rawValue, forKey: Key.format)
+        d.set(export.quality, forKey: Key.quality)
+        d.set(export.dpi, forKey: Key.dpi)
     }
 
     private func restore() {
@@ -120,6 +127,13 @@ final class ForgeStore {
         vectorOptions.curves = d.bool(forKey: Key.curves)
         let simplify = Float(d.double(forKey: Key.simplify))
         if simplify > 0 { vectorOptions.simplify = simplify }
+        if let f = ExportFormat(rawValue: d.string(forKey: Key.format) ?? "") {
+            export.format = f
+        }
+        let q = d.double(forKey: Key.quality)
+        if q > 0 { export.quality = q }
+        let dpi = d.double(forKey: Key.dpi)
+        if dpi >= 36 { export.dpi = dpi }
         let corner = Float(d.double(forKey: Key.corner))
         if corner >= 20 { vectorOptions.cornerAngle = corner }
         paletteCount = max(2, min(16, d.integer(forKey: Key.palette)))
@@ -299,21 +313,8 @@ final class ForgeStore {
     // MARK: - Export
 
     func exportURL() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-        let stamp = Int(Date().timeIntervalSince1970)
-
-        if let svg {
-            let url = dir.appendingPathComponent("imgforge_\(stamp).svg")
-            do { try svg.svg.write(to: url, atomically: true, encoding: .utf8) }
-            catch { throw ForgeError.writeFailed(error.localizedDescription) }
-            return url
-        }
-
+        if let svg { return try Exporter.writeSVG(svg.svg) }
         guard let result else { throw ForgeError.noImage }
-        guard let data = result.pngData() else { throw ForgeError.encodeFailed }
-        let url = dir.appendingPathComponent("imgforge_\(stamp).png")
-        do { try data.write(to: url, options: .atomic) }
-        catch { throw ForgeError.writeFailed(error.localizedDescription) }
-        return url
+        return try Exporter.write(result, settings: export)
     }
 }
