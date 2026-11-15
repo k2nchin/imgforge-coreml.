@@ -286,8 +286,18 @@ final class ContourTracerTests: XCTestCase {
         var bytes = [UInt8](repeating: 30, count: 500)
         bytes.append(contentsOf: [UInt8](repeating: 220, count: 500))
         let cut = ContourTracer.otsu(bytes)
-        XCTAssertGreaterThan(cut, 30)
+        XCTAssertGreaterThan(cut, 30, "El corte no puede pegarse al pico oscuro")
         XCTAssertLessThan(cut, 220)
+        XCTAssertEqual(Int(cut), 125, accuracy: 15, "Debe caer cerca del medio")
+    }
+
+    /// Un círculo se recorre hacia abajo por su lado izquierdo. Si la
+    /// arista se marca con dirección, cada fila reabre el mismo contorno.
+    func testCircleIsTracedOnce() throws {
+        let cg = mask { ctx, _ in
+            ctx.fillEllipse(in: CGRect(x: 15, y: 15, width: 70, height: 70))
+        }
+        XCTAssertEqual(try ContourTracer.trace(mask: cg).count, 1)
     }
 
     /// Un umbral fijo de 128 falla en cuanto el fondo no es blanco puro.
@@ -915,5 +925,31 @@ final class EditorHistoryTests: XCTestCase {
         var depth = 0
         while s.canUndo { s.undo(); depth += 1 }
         XCTAssertLessThanOrEqual(depth, 30, "El historial no crece sin límite")
+    }
+}
+
+final class NeuralCompositionTests: XCTestCase {
+
+    /// Una panorámica como la del logo: 12950×3000. Con el lienzo 4× haría
+    /// falta memoria para 621 MP, así que antes la entrada se reducía a un
+    /// tercio y el modelo reinventaba el texto. El tope debe seguir
+    /// midiendo la salida pedida, no ese intermedio que ya no existe.
+    func testPanoramicImageIsAcceptedAtModestScale() {
+        let cg = renderAtScale1(CGSize(width: 1295, height: 300)) { ctx in
+            UIColor.darkGray.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 1295, height: 300))
+        }.cgImage!
+
+        XCTAssertTrue(Upscaler.neuralFits(cg, scale: 2))
+        XCTAssertTrue(Upscaler.neuralFits(cg, scale: 4))
+    }
+
+    func testScaleCeilingMatchesOutputBudget() {
+        let pixels = 12950 * 3000
+        let top = ForgeEnvironment.maxScale(forPixels: pixels)
+        let out = Double(pixels) * top * top
+        XCTAssertLessThanOrEqual(Int(out), ForgeEnvironment.maxOutputPixels,
+                                 "El tope no puede proponer algo que no cabe")
+        XCTAssertGreaterThanOrEqual(top, 1.0)
     }
 }

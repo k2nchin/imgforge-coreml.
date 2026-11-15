@@ -35,6 +35,17 @@ enum NeuralUpscaler {
         }
     }
 
+    /// Amplía a `options.scale` componiendo **directamente sobre el lienzo
+    /// final**.
+    ///
+    /// Antes se construía el lienzo 4× entero y se reducía al final, lo que
+    /// no cabía en memoria para una imagen grande; la alternativa era
+    /// reducir la entrada antes de pasarla al modelo, y eso tiraba detalle
+    /// real para que el modelo lo reinventara después: en un logo con
+    /// texto, las letras salían blandas. Ahora cada baldosa se infiere a 4×
+    /// y se reduce a su hueco definitivo al dibujarla, así que el modelo
+    /// siempre ve los píxeles originales y la memoria nunca pasa del
+    /// tamaño pedido.
     static func run(_ cg: CGImage,
                     options: Upscaler.Options,
                     context: CIContext,
@@ -43,11 +54,15 @@ enum NeuralUpscaler {
             throw ForgeError.modelMissing(modelName)
         }
         let m = try model()
-        let tiles = plan(width: cg.width, height: cg.height)
 
-        let scale = Int(nativeScale)
-        let outW = cg.width * scale
-        let outH = cg.height * scale
+        let scale = options.scale
+        let outW = max(1, Int((CGFloat(cg.width) * scale).rounded()))
+        let outH = max(1, Int((CGFloat(cg.height) * scale).rounded()))
+
+        guard outW * outH <= ForgeEnvironment.maxOutputPixels else {
+            throw ForgeError.tooLarge(pixels: outW * outH,
+                                      limit: ForgeEnvironment.maxOutputPixels)
+        }
 
         guard let canvas = CGContext(
             data: nil, width: outW, height: outH,
@@ -56,7 +71,11 @@ enum NeuralUpscaler {
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { throw ForgeError.renderFailed }
 
-        let ramp = overlap * scale
+        canvas.interpolationQuality = .high
+
+        let tiles = plan(width: cg.width, height: cg.height)
+        let ramp = max(1, Int((CGFloat(overlap) * scale).rounded()))
+        let native = Int(nativeScale)
 
         for t in tiles {
             if isCancelled() { throw ForgeError.cancelled }
@@ -64,24 +83,24 @@ enum NeuralUpscaler {
             guard let piece = cg.cropping(to: t) else { throw ForgeError.renderFailed }
             let padded = try infer(piece, model: m, context: context)
 
-            // La baldosa se rellenó a tile×tile para el modelo; la región
-            // útil queda arriba a la izquierda y hay que recortarla.
+            // La baldosa se rellenó al tamaño que el modelo exige; la
+            // región útil queda arriba a la izquierda.
             let useful = CGRect(x: 0, y: 0,
-                                width: Int(t.width) * scale,
-                                height: Int(t.height) * scale)
+                                width: Int(t.width) * native,
+                                height: Int(t.height) * native)
             guard let up = padded.cropping(to: useful) else {
                 throw ForgeError.renderFailed
             }
 
+            // Hueco en el lienzo final, en coordenadas con origen abajo.
             let dest = CGRect(
-                x: t.minX * nativeScale,
-                y: (CGFloat(cg.height) - t.maxY) * nativeScale,
-                width: t.width * nativeScale,
-                height: t.height * nativeScale
+                x: (t.minX * scale).rounded(),
+                y: ((CGFloat(cg.height) - t.maxY) * scale).rounded(),
+                width: (t.width * scale).rounded(),
+                height: (t.height * scale).rounded()
             )
+            guard dest.width >= 1, dest.height >= 1 else { continue }
 
-            // Cada baldosa se funde con sus vecinas: sin esto, la última
-            // dibujada gana y aparece una rejilla visible en el solape.
             let mask = feather(
                 width: Int(dest.width), height: Int(dest.height), ramp: ramp,
                 left: t.minX > 0,
@@ -100,21 +119,7 @@ enum NeuralUpscaler {
             canvas.restoreGState()
         }
 
-        guard let base = canvas.makeImage() else { throw ForgeError.renderFailed }
-
-        guard abs(options.scale - nativeScale) > 0.01 else {
-            return UIImage(cgImage: base)
-        }
-
-        let factor = options.scale / nativeScale
-        let scaled = try Upscaler.resize(CIImage(cgImage: base),
-                                         scale: factor, method: .lanczos)
-        let rect = CGRect(x: 0, y: 0,
-                          width: (CGFloat(outW) * factor).rounded(.down),
-                          height: (CGFloat(outH) * factor).rounded(.down))
-        guard let out = context.createCGImage(scaled, from: rect) else {
-            throw ForgeError.renderFailed
-        }
+        guard let out = canvas.makeImage() else { throw ForgeError.renderFailed }
         return UIImage(cgImage: out)
     }
 

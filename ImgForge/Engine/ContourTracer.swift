@@ -84,9 +84,19 @@ enum ContourTracer {
 
     // MARK: - Geometría del recorrido
 
-    /// Arista que sale del vértice (x, y) en una dirección, como clave única.
+    /// Clave **sin dirección** de la arista que sale de (x, y) hacia `dir`.
+    ///
+    /// Una arista se recorre en un sentido u otro según de qué lado de la
+    /// forma esté. Con una clave direccional, el lado izquierdo de un
+    /// círculo se recorre hacia abajo y la arista de arranque, que apunta
+    /// hacia arriba, nunca quedaba marcada: cada fila reabría el mismo
+    /// contorno y un círculo salía repetido decenas de veces.
     private static func edgeKey(x: Int, y: Int, dir: Int, w: Int) -> Int {
-        ((y * (w + 1)) + x) * 4 + dir
+        let (dx, dy) = delta(dir)
+        let x2 = x + dx, y2 = y + dy
+        let ax = min(x, x2), ay = min(y, y2)
+        let vertical = dx == 0 ? 1 : 0
+        return ((ay * (w + 2)) + ax) * 2 + vertical
     }
 
     private static func delta(_ dir: Int) -> (Int, Int) {
@@ -165,7 +175,11 @@ enum ContourTracer {
         var sumBackground = 0.0
         var weightBackground = 0
         var best = 0.0
-        var cut = 128
+        // Todo corte entre los dos picos da la misma varianza. Quedarse con
+        // el primero deja el umbral pegado al pico oscuro; el punto medio
+        // del tramo empatado es el corte real.
+        var firstBest = 128
+        var lastBest = 128
 
         for t in 0..<256 {
             weightBackground += histogram[t]
@@ -179,11 +193,15 @@ enum ContourTracer {
 
             let between = Double(weightBackground) * Double(weightForeground)
                 * (meanBackground - meanForeground) * (meanBackground - meanForeground)
-            if between > best {
+            if between > best * 1.000001 {
                 best = between
-                cut = t
+                firstBest = t
+                lastBest = t
+            } else if between >= best * 0.999999 && best > 0 {
+                lastBest = t
             }
         }
+        let cut = (firstBest + lastBest) / 2
         return UInt8(min(255, max(1, cut)))
     }
 
