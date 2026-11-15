@@ -21,7 +21,7 @@ on:
       - ".github/workflows/build-ipa.yml"
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 concurrency:
@@ -133,6 +133,30 @@ jobs:
           path: build/ImgForge-unsigned.ipa
           retention-days: 30
           if-no-files-found: error
+
+      - name: Publicar Release con la IPA
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="build-${{ github.run_number }}"
+          SIZE=$(du -h build/ImgForge-unsigned.ipa | cut -f1)
+          MODEL="sin modelo neural"
+          [ -d ImgForge/Resources/RealESRGAN.mlmodelc ] && MODEL="con Real-ESRGAN incluido"
+
+          gh release create "$TAG" \
+            build/ImgForge-unsigned.ipa \
+            --title "ImgForge build ${{ github.run_number }}" \
+            --notes "IPA sin firmar, $SIZE, $MODEL.
+
+          Commit: ${{ github.sha }}
+
+          Para instalar hace falta refirmarla con Sideloadly o AltStore usando tu Apple ID." \
+            --latest
+
+          echo "Release publicada:"
+          gh release view "$TAG" --json url --jq '.url'
 
       - name: Upload build log on failure
         if: failure()
