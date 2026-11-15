@@ -27,13 +27,85 @@ final class EditorStore {
     /// Mientras el usuario no fije una medida, el tamaño de salida sigue
     /// al recorte. Sin esto, recortar y exportar volvía a estirar el
     /// recorte hasta las medidas originales, que es pura pérdida.
-    private(set) var sizeTouched = false
+    var sizeTouched = false
 
     private(set) var isWorking = false
     var error: String?
     var status: String?
 
     @ObservationIgnored private var previewTask: Task<Void, Never>?
+
+    // MARK: - Historial
+
+    struct Snapshot: Equatable {
+        var crop: CGRect
+        var ratio: CGFloat?
+        var adjustments: Adjustments.Options
+        var resize: Resizer.Options
+        var sizeTouched: Bool
+    }
+
+    @ObservationIgnored private var undoStack: [Snapshot] = []
+    @ObservationIgnored private var redoStack: [Snapshot] = []
+
+    var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
+
+    private var snapshot: Snapshot {
+        Snapshot(crop: crop, ratio: ratio, adjustments: adjustments,
+                 resize: resize, sizeTouched: sizeTouched)
+    }
+
+    private func restore(_ s: Snapshot) {
+        suspendHistory = true
+        crop = s.crop
+        ratio = s.ratio
+        adjustments = s.adjustments
+        resize = s.resize
+        sizeTouched = s.sizeTouched
+        suspendHistory = false
+        schedulePreview()
+    }
+
+    @ObservationIgnored private var suspendHistory = false
+
+    /// Se llama antes de cada cambio que el usuario querría deshacer:
+    /// al soltar un deslizador, al tocar un botón, no en cada fotograma.
+    func commit() {
+        guard !suspendHistory else { return }
+        let s = snapshot
+        guard undoStack.last != s else { return }
+        undoStack.append(s)
+        if undoStack.count > 30 { undoStack.removeFirst() }
+        redoStack.removeAll()
+    }
+
+    func undo() {
+        guard let previous = undoStack.popLast() else { return }
+        redoStack.append(snapshot)
+        restore(previous)
+        status = "Deshecho."
+    }
+
+    func redo() {
+        guard let next = redoStack.popLast() else { return }
+        undoStack.append(snapshot)
+        restore(next)
+        status = "Rehecho."
+    }
+
+    // MARK: - Mejora automática
+
+    func autoEnhance() {
+        guard let src = preview ?? source else { return }
+        commit()
+        do {
+            adjustments = try AutoEnhance.suggest(for: src, keeping: adjustments)
+            status = "Mejora automática aplicada."
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
 
     /// Proporción de la imagen ya recortada: de ahí sale el candado.
     var croppedAspect: CGFloat {
@@ -95,6 +167,8 @@ final class EditorStore {
         adjustments = Adjustments.Options()
         sizeTouched = false
         syncSizeToCrop()
+        undoStack.removeAll()
+        redoStack.removeAll()
         status = "Ajustes restablecidos."
         schedulePreview()
     }
@@ -279,6 +353,10 @@ struct EditorView: View {
                     CropOverlay(image: src, rect: $store.crop, ratio: store.ratio)
                         .padding(12)
                         .onChange(of: store.crop) { _, _ in store.cropChanged() }
+                        .simultaneousGesture(
+                            DragGesture(minimumDistance: 6)
+                                .onEnded { _ in store.commit() }
+                        )
                 } else if let p = store.preview {
                     Image(uiImage: p)
                         .resizable()
@@ -300,6 +378,32 @@ struct EditorView: View {
     private var controls: some View {
         if store.source != nil {
             VStack(spacing: 14) {
+                HStack(spacing: 10) {
+                    Button { store.undo() } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                            .frame(width: 44, height: 36)
+                    }
+                    .disabled(!store.canUndo)
+                    .accessibilityLabel("Deshacer")
+
+                    Button { store.redo() } label: {
+                        Image(systemName: "arrow.uturn.forward")
+                            .frame(width: 44, height: 36)
+                    }
+                    .disabled(!store.canRedo)
+                    .accessibilityLabel("Rehacer")
+
+                    Spacer()
+
+                    Button { store.autoEnhance() } label: {
+                        Label("Automático", systemImage: "wand.and.stars")
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 12)
+                            .frame(minHeight: 36)
+                    }
+                    .buttonStyle(.bordered)
+                }
+
                 Picker("Panel", selection: $store.panel) {
                     ForEach(EditorStore.Panel.allCases) { Text($0.rawValue).tag($0) }
                 }
@@ -362,7 +466,7 @@ struct EditorView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(ratios, id: \.0) { name, value in
-                        Button(name) { store.setRatio(value) }
+                        Button(name) { store.commit(); store.setRatio(value) }
                             .font(.subheadline.weight(.medium))
                             .padding(.horizontal, 14)
                             .frame(minHeight: 44)
@@ -380,16 +484,19 @@ struct EditorView: View {
 
             HStack(spacing: 10) {
                 Button {
+                    store.commit()
                     store.adjustments.rotationQuarters -= 1
                 } label: {
                     Image(systemName: "rotate.left").frame(maxWidth: .infinity, minHeight: 30)
                 }
                 Button {
+                    store.commit()
                     store.adjustments.rotationQuarters += 1
                 } label: {
                     Image(systemName: "rotate.right").frame(maxWidth: .infinity, minHeight: 30)
                 }
                 Button {
+                    store.commit()
                     store.adjustments.flipHorizontal.toggle()
                 } label: {
                     Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right")
@@ -466,7 +573,7 @@ struct EditorView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(Resizer.presets) { p in
-                        Button(p.name) { store.applyPreset(p) }
+                        Button(p.name) { store.commit(); store.applyPreset(p) }
                             .font(.subheadline.weight(.medium))
                             .lineLimit(1)
                             .padding(.horizontal, 14)
@@ -549,7 +656,11 @@ struct EditorView: View {
     private func slider(_ title: String, _ value: Binding<Double>,
                         _ range: ClosedRange<Double>, _ format: String) -> some View {
         labeled(title, String(format: format, value.wrappedValue)) {
-            Slider(value: value, in: range)
+            Slider(value: value, in: range) { editing in
+                // Al empezar a arrastrar, no en cada fotograma: así deshacer
+                // retrocede un ajuste entero y no un píxel de recorrido.
+                if editing { store.commit() }
+            }
         }
     }
 

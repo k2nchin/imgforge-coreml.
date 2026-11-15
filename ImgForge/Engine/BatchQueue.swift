@@ -63,26 +63,29 @@ final class BatchQueue {
         task = Task { [weak self] in
             guard let self else { return }
             let export = self.export
-            let pending = self.jobs.indices.filter { self.jobs[$0].state != .done }
+            // Por identidad, no por índice: añadir imágenes mientras corre
+            // desplazaba los índices y el resultado caía en otra fila.
+            let pending = self.jobs.filter { $0.state != .done }.map(\.id)
 
-            for index in pending {
+            for id in pending {
                 if Task.isCancelled { break }
-                guard index < self.jobs.count else { break }
+                guard let i = self.jobs.firstIndex(where: { $0.id == id }) else { continue }
 
-                self.jobs[index].state = .running
-                let image = self.jobs[index].image
-                let name = self.jobs[index].name
+                self.jobs[i].state = .running
+                let image = self.jobs[i].image
+                let name = self.jobs[i].name
 
                 do {
                     let url = try await Self.work(image, name: name,
                                                   preset: preset, export: export)
-                    guard !Task.isCancelled, index < self.jobs.count else { break }
-                    self.jobs[index].output = url
-                    self.jobs[index].state = .done
+                    guard !Task.isCancelled else { break }
+                    guard let j = self.jobs.firstIndex(where: { $0.id == id }) else { continue }
+                    self.jobs[j].output = url
+                    self.jobs[j].state = .done
                 } catch {
-                    guard index < self.jobs.count else { break }
-                    self.jobs[index].message = error.localizedDescription
-                    self.jobs[index].state = .failed
+                    guard let j = self.jobs.firstIndex(where: { $0.id == id }) else { continue }
+                    self.jobs[j].message = error.localizedDescription
+                    self.jobs[j].state = .failed
                 }
             }
             self.isRunning = false

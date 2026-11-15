@@ -28,7 +28,7 @@ final class ForgeStore {
         var id: String { rawValue }
     }
 
-    var mode: Mode = .upscale
+    var mode: Mode = .upscale { didSet { persist(); scheduleDraft() } }
     var source: UIImage?
     var preview: UIImage?
     var result: UIImage?

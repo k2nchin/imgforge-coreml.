@@ -14,8 +14,28 @@ struct ZoomableImageView: View {
 
     private let maxZoom: CGFloat = 12
 
+    /// La cortina se apaga al ampliar: la máscara escala con la imagen y
+    /// el tirador no, así que lo que se ve y lo que se arrastra dejarían
+    /// de coincidir.
     private var showsSplit: Bool {
-        splitEnabled && before != nil && after != nil
+        splitEnabled && before != nil && after != nil && zoom <= 1.02
+    }
+
+    /// Rectángulo que ocupa la imagen dentro del contenedor con scaledToFit.
+    private func fitted(in size: CGSize) -> CGRect {
+        let img = after ?? before
+        guard let img, img.size.height > 0 else {
+            return CGRect(origin: .zero, size: size)
+        }
+        let aspect = img.size.width / img.size.height
+        var w = size.width
+        var h = w / aspect
+        if h > size.height {
+            h = size.height
+            w = h * aspect
+        }
+        return CGRect(x: (size.width - w) / 2, y: (size.height - h) / 2,
+                      width: w, height: h)
     }
 
     var body: some View {
@@ -63,7 +83,7 @@ struct ZoomableImageView: View {
             if let before {
                 Image(uiImage: before)
                     .resizable()
-                    .interpolation(.none)
+                    .interpolation(.high)
                     .scaledToFit()
             }
             if let after {
@@ -73,7 +93,11 @@ struct ZoomableImageView: View {
                     .scaledToFit()
                     .mask(alignment: .leading) {
                         if showsSplit {
-                            Rectangle().frame(width: size.width * split)
+                            // El corte se mide sobre la imagen, no sobre el
+                            // contenedor: con bandas laterales no coinciden.
+                            let box = fitted(in: size)
+                            Rectangle()
+                                .frame(width: box.minX + box.width * split)
                         } else {
                             Rectangle()
                         }
@@ -83,7 +107,8 @@ struct ZoomableImageView: View {
     }
 
     private func handle(in size: CGSize) -> some View {
-        let x = size.width * split
+        let box = fitted(in: size)
+        let x = box.minX + box.width * split
 
         return ZStack(alignment: .topLeading) {
             Rectangle()
@@ -110,7 +135,9 @@ struct ZoomableImageView: View {
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { g in
-                    split = min(1, max(0, g.location.x / size.width))
+                    let box = fitted(in: size)
+                    guard box.width > 0 else { return }
+                    split = min(1, max(0, (g.location.x - box.minX) / box.width))
                 }
         )
     }

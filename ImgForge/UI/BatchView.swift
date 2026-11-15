@@ -180,7 +180,10 @@ struct BatchView: View {
         for (i, item) in items.enumerated() {
             guard let data = try? await item.loadTransferable(type: Data.self),
                   let img = UIImage(data: data) else { continue }
-            loaded.append(("imagen_\(i + 1)", img.normalizedOrientation()))
+            // Marca de tiempo en el nombre: dos tandas seguidas se
+            // pisaban los archivos en temporales.
+            let stamp = Int(Date().timeIntervalSince1970)
+            loaded.append(("imagen_\(stamp)_\(i + 1)", img.normalizedOrientation()))
         }
         queue.enqueue(loaded)
         picks.removeAll()

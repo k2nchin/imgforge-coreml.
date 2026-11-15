@@ -725,3 +725,151 @@ final class EditorSizeTests: XCTestCase {
         XCTAssertEqual(s.resize.height, 500, "La proporción es la del recorte, 1:1")
     }
 }
+
+final class StraightenTests: XCTestCase {
+
+    /// La fórmula de cos(θ) solo vale para un cuadrado: en 16:9 dejaba
+    /// esquinas transparentes al enderezar.
+    func testInscribedRectFitsInsideRotatedBox() {
+        for (w, h) in [(1600.0, 900.0), (900.0, 1600.0), (1000.0, 1000.0)] {
+            for degrees in stride(from: 1.0, through: 15.0, by: 2.0) {
+                let a = degrees * .pi / 180
+                let box = Adjustments.largestInscribed(
+                    width: CGFloat(w), height: CGFloat(h), angle: CGFloat(a))
+
+                // Proyección del rectángulo propuesto sobre los ejes del
+                // original: debe caber en w×h.
+                let projW = box.width * cos(a) + box.height * sin(a)
+                let projH = box.width * sin(a) + box.height * cos(a)
+
+                XCTAssertLessThanOrEqual(projW, CGFloat(w) + 1,
+                                         "\(w)x\(h) a \(degrees)° se sale de ancho")
+                XCTAssertLessThanOrEqual(projH, CGFloat(h) + 1,
+                                         "\(w)x\(h) a \(degrees)° se sale de alto")
+            }
+        }
+    }
+
+    func testZeroAngleKeepsFullSize() {
+        let box = Adjustments.largestInscribed(width: 800, height: 600, angle: 0)
+        XCTAssertEqual(box.width, 800)
+        XCTAssertEqual(box.height, 600)
+    }
+
+    func testInscribedIsNotDegenerate() {
+        let box = Adjustments.largestInscribed(width: 1600, height: 900,
+                                               angle: 15 * .pi / 180)
+        XCTAssertGreaterThan(box.width, 1000)
+        XCTAssertGreaterThan(box.height, 500)
+    }
+}
+
+final class AutoEnhanceTests: XCTestCase {
+
+    private func flat(_ level: CGFloat) -> UIImage {
+        renderAtScale1(CGSize(width: 64, height: 64)) { ctx in
+            UIColor(white: level, alpha: 1).setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+        }
+    }
+
+    func testMeasuresBrightness() throws {
+        let dark = try AutoEnhance.measure(flat(0.15))
+        let light = try AutoEnhance.measure(flat(0.85))
+        XCTAssertLessThan(dark.mean, light.mean)
+    }
+
+    func testDarkImageGetsPositiveExposure() throws {
+        let o = try AutoEnhance.suggest(for: flat(0.12),
+                                        keeping: Adjustments.Options())
+        XCTAssertGreaterThan(o.exposure, 0, "Una foto oscura debe subir")
+        XCTAssertLessThanOrEqual(o.exposure, 1.2, "Pero con tope")
+    }
+
+    func testBrightImageGetsNegativeExposure() throws {
+        let o = try AutoEnhance.suggest(for: flat(0.9),
+                                        keeping: Adjustments.Options())
+        XCTAssertLessThan(o.exposure, 0)
+        XCTAssertGreaterThanOrEqual(o.exposure, -1.2)
+    }
+
+    func testKeepsGeometryUntouched() throws {
+        var current = Adjustments.Options()
+        current.rotationQuarters = 2
+        current.flipHorizontal = true
+        current.straighten = 4
+
+        let o = try AutoEnhance.suggest(for: flat(0.3), keeping: current)
+        XCTAssertEqual(o.rotationQuarters, 2)
+        XCTAssertTrue(o.flipHorizontal)
+        XCTAssertEqual(o.straighten, 4)
+    }
+}
+
+@MainActor
+final class EditorHistoryTests: XCTestCase {
+
+    private func loaded() -> EditorStore {
+        let s = EditorStore()
+        s.load(renderAtScale1(CGSize(width: 800, height: 600)) { ctx in
+            UIColor.systemPink.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 800, height: 600))
+        })
+        return s
+    }
+
+    func testUndoRestoresPreviousState() {
+        let s = loaded()
+        XCTAssertFalse(s.canUndo)
+
+        s.commit()
+        s.adjustments.exposure = 1.0
+        XCTAssertTrue(s.canUndo)
+
+        s.undo()
+        XCTAssertEqual(s.adjustments.exposure, 0)
+    }
+
+    func testRedoReappliesIt() {
+        let s = loaded()
+        s.commit()
+        s.adjustments.saturation = 1.8
+        s.undo()
+        XCTAssertTrue(s.canRedo)
+
+        s.redo()
+        XCTAssertEqual(s.adjustments.saturation, 1.8)
+    }
+
+    func testNewEditClearsRedo() {
+        let s = loaded()
+        s.commit()
+        s.adjustments.contrast = 1.3
+        s.undo()
+        XCTAssertTrue(s.canRedo)
+
+        s.commit()
+        s.adjustments.exposure = 0.4
+        XCTAssertFalse(s.canRedo, "Un cambio nuevo invalida la rama rehecha")
+    }
+
+    func testResetClearsHistory() {
+        let s = loaded()
+        s.commit()
+        s.adjustments.exposure = 1
+        s.reset()
+        XCTAssertFalse(s.canUndo)
+        XCTAssertFalse(s.canRedo)
+    }
+
+    func testHistoryIsBounded() {
+        let s = loaded()
+        for i in 0..<60 {
+            s.commit()
+            s.adjustments.exposure = Double(i) / 100
+        }
+        var depth = 0
+        while s.canUndo { s.undo(); depth += 1 }
+        XCTAssertLessThanOrEqual(depth, 30, "El historial no crece sin límite")
+    }
+}

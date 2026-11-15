@@ -137,19 +137,56 @@ enum Adjustments {
             let angle = -CGFloat(options.straighten) * .pi / 180
             let before = image.extent
             image = image.transformed(by: CGAffineTransform(rotationAngle: angle))
-            // Se recorta al rectángulo original centrado: girar deja esquinas
-            // vacías, y una franja transparente en el borde no es un ajuste.
+
+            // Girar deja esquinas vacías. Se recorta al mayor rectángulo
+            // inscrito con la proporción original: la fórmula de cos(θ) que
+            // tenía antes solo vale para un cuadrado y dejaba franjas
+            // transparentes en cualquier otra proporción.
+            let box = largestInscribed(width: before.width,
+                                       height: before.height,
+                                       angle: abs(angle))
             let after = image.extent
-            let inset = CGRect(
-                x: after.midX - before.width / 2 * cos(abs(angle)),
-                y: after.midY - before.height / 2 * cos(abs(angle)),
-                width: before.width * cos(abs(angle)),
-                height: before.height * cos(abs(angle))
-            )
+            let inset = CGRect(x: after.midX - box.width / 2,
+                               y: after.midY - box.height / 2,
+                               width: box.width, height: box.height)
             image = image.cropped(to: inset.intersection(after))
         }
 
         return image
+    }
+
+    /// Mayor rectángulo de la proporción original que cabe dentro de uno
+    /// de w×h girado un ángulo. Es el recorte que hace Photoshop al
+    /// enderezar, y el único que no deja borde vacío.
+    static func largestInscribed(width w: CGFloat,
+                                 height h: CGFloat,
+                                 angle: CGFloat) -> CGSize {
+        guard w > 0, h > 0, angle > 0 else { return CGSize(width: w, height: h) }
+
+        let longerIsWidth = w >= h
+        let long = max(w, h)
+        let short = min(w, h)
+
+        let sinA = abs(sin(angle))
+        let cosA = abs(cos(angle))
+
+        var outLong: CGFloat
+        var outShort: CGFloat
+
+        if short <= 2 * sinA * cosA * long || abs(sinA - cosA) < 1e-9 {
+            // Mitad del lado corto es el límite.
+            let x = 0.5 * short
+            outLong = sinA <= cosA ? x / sinA : x / cosA
+            outShort = sinA <= cosA ? x / cosA : x / sinA
+        } else {
+            let cos2A = cosA * cosA - sinA * sinA
+            outLong = (long * cosA - short * sinA) / cos2A
+            outShort = (short * cosA - long * sinA) / cos2A
+        }
+
+        return longerIsWidth
+            ? CGSize(width: max(1, outLong), height: max(1, outShort))
+            : CGSize(width: max(1, outShort), height: max(1, outLong))
     }
 
     // MARK: - Tono
