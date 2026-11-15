@@ -7,6 +7,8 @@ struct BatchView: View {
     @State private var preset: Preset = Preset.all[0]
     @State private var shareURLs: [URL] = []
     @State private var showShare = false
+    @State private var saving = false
+    @State private var notice: String?
 
     var body: some View {
         NavigationStack {
@@ -101,6 +103,13 @@ struct BatchView: View {
                     .tint(Color.accentColor)
             }
 
+            if let notice {
+                Text(notice)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             Picker("Preset", selection: $preset) {
                 ForEach(Preset.all) { Text($0.name).tag($0) }
             }
@@ -121,6 +130,27 @@ struct BatchView: View {
                 .disabled(queue.jobs.isEmpty)
 
                 Button {
+                    saving = true
+                    Task {
+                        notice = await PhotoSaver.save(urls: queue.outputs).message
+                        saving = false
+                    }
+                } label: {
+                    Group {
+                        if saving {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "square.and.arrow.down")
+                        }
+                    }
+                    .frame(height: 30)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(queue.outputs.isEmpty || saving)
+                .accessibilityLabel("Guardar en Fotos")
+
+                Button {
                     shareURLs = queue.outputs
                     showShare = !shareURLs.isEmpty
                 } label: {
@@ -130,7 +160,7 @@ struct BatchView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
                 .disabled(queue.outputs.isEmpty)
-                .accessibilityLabel("Exportar resultados")
+                .accessibilityLabel("Compartir resultados")
             }
         }
         .padding(16)

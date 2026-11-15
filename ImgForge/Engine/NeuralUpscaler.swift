@@ -9,13 +9,14 @@ enum NeuralUpscaler {
 
     static let modelName = "RealESRGAN"
     static let nativeScale: CGFloat = 4
-    static let tile = 512
-    static let overlap = 32
+    static var tile: Int { ForgeEnvironment.neuralTile }
+    static let overlap = 48
 
     private static var cached: MLModel?
 
     static var isAvailable: Bool {
-        Bundle.main.url(forResource: modelName, withExtension: "mlmodelc") != nil
+        guard ForgeEnvironment.allowsNeural else { return false }
+        return Bundle.main.url(forResource: modelName, withExtension: "mlmodelc") != nil
     }
 
     private static func model() throws -> MLModel {
@@ -36,12 +37,17 @@ enum NeuralUpscaler {
 
     static func run(_ cg: CGImage,
                     options: Upscaler.Options,
-                    context: CIContext) throws -> UIImage {
+                    context: CIContext,
+                    isCancelled: () -> Bool = { false }) throws -> UIImage {
+        guard ForgeEnvironment.allowsNeural else {
+            throw ForgeError.modelMissing(modelName)
+        }
         let m = try model()
         let tiles = plan(width: cg.width, height: cg.height)
 
-        let outW = cg.width * Int(nativeScale)
-        let outH = cg.height * Int(nativeScale)
+        let scale = Int(nativeScale)
+        let outW = cg.width * scale
+        let outH = cg.height * scale
 
         guard let canvas = CGContext(
             data: nil, width: outW, height: outH,
@@ -50,16 +56,48 @@ enum NeuralUpscaler {
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { throw ForgeError.renderFailed }
 
+        let ramp = overlap * scale
+
         for t in tiles {
+            if isCancelled() { throw ForgeError.cancelled }
+
             guard let piece = cg.cropping(to: t) else { throw ForgeError.renderFailed }
-            let up = try infer(piece, model: m, context: context)
+            let padded = try infer(piece, model: m, context: context)
+
+            // La baldosa se rellenó a tile×tile para el modelo; la región
+            // útil queda arriba a la izquierda y hay que recortarla.
+            let useful = CGRect(x: 0, y: 0,
+                                width: Int(t.width) * scale,
+                                height: Int(t.height) * scale)
+            guard let up = padded.cropping(to: useful) else {
+                throw ForgeError.renderFailed
+            }
+
             let dest = CGRect(
                 x: t.minX * nativeScale,
                 y: (CGFloat(cg.height) - t.maxY) * nativeScale,
                 width: t.width * nativeScale,
                 height: t.height * nativeScale
             )
+
+            // Cada baldosa se funde con sus vecinas: sin esto, la última
+            // dibujada gana y aparece una rejilla visible en el solape.
+            let mask = feather(
+                width: Int(dest.width), height: Int(dest.height), ramp: ramp,
+                left: t.minX > 0,
+                right: Int(t.maxX) < cg.width,
+                top: t.minY > 0,
+                bottom: Int(t.maxY) < cg.height
+            )
+
+            canvas.saveGState()
+            if let mask {
+                canvas.clip(to: dest, mask: mask)
+            } else {
+                canvas.clip(to: dest)
+            }
             canvas.draw(up, in: dest)
+            canvas.restoreGState()
         }
 
         guard let base = canvas.makeImage() else { throw ForgeError.renderFailed }
@@ -72,35 +110,78 @@ enum NeuralUpscaler {
         let scaled = try Upscaler.resize(CIImage(cgImage: base),
                                          scale: factor, method: .lanczos)
         let rect = CGRect(x: 0, y: 0,
-                          width: CGFloat(outW) * factor,
-                          height: CGFloat(outH) * factor)
+                          width: (CGFloat(outW) * factor).rounded(.down),
+                          height: (CGFloat(outH) * factor).rounded(.down))
         guard let out = context.createCGImage(scaled, from: rect) else {
             throw ForgeError.renderFailed
         }
         return UIImage(cgImage: out)
     }
 
-    // MARK: - Interna
+    // MARK: - Baldosas
 
     private static func plan(width: Int, height: Int) -> [CGRect] {
         guard width > tile || height > tile else {
             return [CGRect(x: 0, y: 0, width: width, height: height)]
         }
         var out: [CGRect] = []
-        let step = tile - overlap
+        let step = max(1, tile - overlap)
         var y = 0
         while y < height {
-            var x = 0
             let h = min(tile, height - y)
+            var x = 0
             while x < width {
                 let w = min(tile, width - x)
                 out.append(CGRect(x: x, y: y, width: w, height: h))
+                if x + w >= width { break }
                 x += step
             }
+            if y + h >= height { break }
             y += step
         }
         return out
     }
+
+    /// Máscara en escala de grises: 255 en el centro, rampa lineal hasta 0
+    /// en los lados que tienen vecina. Fila 0 es la de arriba, igual que
+    /// el espacio de imagen en el que se calculan las banderas.
+    private static func feather(width: Int, height: Int, ramp: Int,
+                                left: Bool, right: Bool,
+                                top: Bool, bottom: Bool) -> CGImage? {
+        guard width > 0, height > 0 else { return nil }
+        guard left || right || top || bottom else { return nil }
+
+        let r = max(1, min(ramp, min(width, height) / 2))
+        var bytes = [UInt8](repeating: 255, count: width * height)
+
+        for y in 0..<height {
+            var vY: Float = 1
+            if top, y < r { vY = min(vY, Float(y) / Float(r)) }
+            if bottom, y >= height - r { vY = min(vY, Float(height - 1 - y) / Float(r)) }
+
+            for x in 0..<width {
+                var v = vY
+                if left, x < r { v = min(v, Float(x) / Float(r)) }
+                if right, x >= width - r { v = min(v, Float(width - 1 - x) / Float(r)) }
+                if v < 1 {
+                    bytes[y * width + x] = UInt8(max(0, min(255, v * 255)))
+                }
+            }
+        }
+
+        return bytes.withUnsafeMutableBytes { ptr -> CGImage? in
+            guard let base = ptr.baseAddress,
+                  let ctx = CGContext(
+                      data: base, width: width, height: height,
+                      bitsPerComponent: 8, bytesPerRow: width,
+                      space: CGColorSpaceCreateDeviceGray(),
+                      bitmapInfo: CGImageAlphaInfo.none.rawValue
+                  ) else { return nil }
+            return ctx.makeImage()
+        }
+    }
+
+    // MARK: - Inferencia
 
     private static func infer(_ piece: CGImage,
                               model: MLModel,
@@ -127,14 +208,17 @@ enum NeuralUpscaler {
         return cg
     }
 
+    /// El modelo espera exactamente `tile`×`tile`. Una baldosa de borde es
+    /// más pequeña, así que se centra en un lienzo del tamaño pedido.
     private static func pixelBuffer(from cg: CGImage) -> CVPixelBuffer? {
+        let side = tile
         let attrs: [CFString: Any] = [
             kCVPixelBufferCGImageCompatibilityKey: true,
             kCVPixelBufferCGBitmapContextCompatibilityKey: true
         ]
         var pb: CVPixelBuffer?
         let status = CVPixelBufferCreate(
-            kCFAllocatorDefault, cg.width, cg.height,
+            kCFAllocatorDefault, side, side,
             kCVPixelFormatType_32ARGB, attrs as CFDictionary, &pb
         )
         guard status == kCVReturnSuccess, let buffer = pb else { return nil }
@@ -144,14 +228,15 @@ enum NeuralUpscaler {
 
         guard let ctx = CGContext(
             data: CVPixelBufferGetBaseAddress(buffer),
-            width: cg.width, height: cg.height,
+            width: side, height: side,
             bitsPerComponent: 8,
             bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
         ) else { return nil }
 
-        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        ctx.draw(cg, in: CGRect(x: 0, y: side - cg.height,
+                                width: cg.width, height: cg.height))
         return buffer
     }
 }

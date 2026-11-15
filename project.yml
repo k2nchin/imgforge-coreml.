@@ -55,12 +55,30 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.aparataje.imgforge.share
         INFOPLIST_FILE: ImgForgeShare/Info.plist
 
+  ImgForgeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ImgForgeTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aparataje.imgforge.tests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: ImgForge
+
 schemes:
   ImgForge:
     build:
       targets:
         ImgForge: all
+        ImgForgeTests: [test]
     run:
       config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - ImgForgeTests
     archive:
       config: Release

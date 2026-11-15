@@ -84,6 +84,31 @@ jobs:
           xcodegen generate --spec project.yml
           ls -d ImgForge.xcodeproj
 
+      - name: Tests unitarios
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available --json \
+            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.isAvailable)] | .[0].udid // empty')
+
+          if [ -z "$UDID" ]; then
+            echo "::error::No hay simulador iOS disponible en el runner."
+            xcrun simctl list devices available | head -20
+            exit 1
+          fi
+          echo "Simulador: $UDID"
+
+          xcodebuild test \
+            -project ImgForge.xcodeproj \
+            -scheme ImgForge \
+            -destination "platform=iOS Simulator,id=$UDID" \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee test.log | xcpretty || {
+              echo "::group::Fallos"
+              grep -E "error:|failed" test.log | head -40
+              echo "::endgroup::"
+              exit 1
+            }
+
       - name: Build archive
         env:
           CONFIG: ${{ github.event.inputs.configuration || 'Release' }}
@@ -163,6 +188,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: build.log
+          path: |
+            build.log
+            test.log
           retention-days: 7
           if-no-files-found: ignore

@@ -13,6 +13,7 @@ enum ForgeError: LocalizedError {
     case modelMissing(String)
     case modelLoadFailed(String)
     case inferenceFailed(String)
+    case cancelled
 
     var errorDescription: String? {
         switch self {
@@ -40,6 +41,8 @@ enum ForgeError: LocalizedError {
             return "No se pudo cargar el modelo: \(m)"
         case .inferenceFailed(let m):
             return "La inferencia falló: \(m)"
+        case .cancelled:
+            return "Operación cancelada."
         }
     }
 }

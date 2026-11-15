@@ -4,7 +4,7 @@ import UIKit
 
 enum Upscaler {
 
-    static let maxOutputPixels = 64_000_000
+    static var maxOutputPixels: Int { ForgeEnvironment.maxOutputPixels }
 
     enum Method: String, CaseIterable, Identifiable, Hashable {
         case lanczos = "Lanczos"
@@ -41,7 +41,8 @@ enum Upscaler {
 
     static func run(_ input: UIImage,
                     options: Options,
-                    quality: Quality = .full) throws -> UIImage {
+                    quality: Quality = .full,
+                    isCancelled: () -> Bool = { false }) throws -> UIImage {
         guard let cg = input.cgImage else { throw ForgeError.decodeFailed }
 
         if case .draft(let maxEdge) = quality {
@@ -65,13 +66,22 @@ enum Upscaler {
             useNeural = NeuralUpscaler.isAvailable && cg.width * cg.height <= 4_000_000
         }
 
-        if useNeural {
+        if useNeural && NeuralUpscaler.isAvailable {
             do {
-                return try NeuralUpscaler.run(cg, options: options, context: context)
+                return try NeuralUpscaler.run(cg, options: options,
+                                              context: context,
+                                              isCancelled: isCancelled)
+            } catch ForgeError.cancelled {
+                throw ForgeError.cancelled
             } catch {
                 if options.engine == .neural { throw error }
             }
+        } else if useNeural && options.engine == .neural {
+            // La extensión no tiene presupuesto de memoria para el modelo.
+            throw ForgeError.modelMissing(NeuralUpscaler.modelName)
         }
+
+        if isCancelled() { throw ForgeError.cancelled }
         return try classic(cg, options: options,
                            size: CGSize(width: outW, height: outH))
     }

@@ -12,6 +12,8 @@
   <string>APPL</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
+  <key>NSPhotoLibraryAddUsageDescription</key>
+  <string>ImgForge guarda en tu carrete las imágenes que amplías.</string>
   <key>CFBundleDisplayName</key>
   <string>ImgForge</string>
   <key>CFBundleShortVersionString</key>

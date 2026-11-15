@@ -5,6 +5,7 @@ struct ContentView: View {
     @State private var store = ForgeStore()
     @State private var pick: PhotosPickerItem?
     @State private var shareURL: URL?
+    @State private var saving = false
     @Environment(\.dynamicTypeSize) private var typeSize
 
     /// A tamaños accesibles los controles se apilan en vez de comprimirse.
@@ -76,6 +77,18 @@ struct ContentView: View {
                     }
                     .disabled(store.result == nil && store.svg == nil)
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        saveToPhotos()
+                    } label: {
+                        if saving {
+                            ProgressView()
+                        } else {
+                            Label("Guardar en Fotos", systemImage: "square.and.arrow.down")
+                        }
+                    }
+                    .disabled(store.result == nil || saving)
+                }
             }
             .safeAreaInset(edge: .bottom) {
                 if store.source != nil {
@@ -106,6 +119,20 @@ struct ContentView: View {
             )) { item in
                 ShareSheet(urls: [item.url])
             }
+        }
+    }
+
+    private func saveToPhotos() {
+        saving = true
+        Task {
+            do {
+                let url = try store.exportURL()
+                let outcome = await PhotoSaver.save(urls: [url])
+                store.status = outcome.message
+            } catch {
+                store.error = error.localizedDescription
+            }
+            saving = false
         }
     }
 
@@ -169,6 +196,17 @@ struct ContentView: View {
                 LabeledContent("Salida", value: store.outputSize)
                     .font(.footnote)
             } else {
+                Toggle("Vectorizar a color", isOn: $store.vectorInColor)
+
+                if store.vectorInColor {
+                    slider("Colores",
+                           value: Binding(
+                               get: { Double(store.paletteCount) },
+                               set: { store.paletteCount = Int($0) }),
+                           range: 2...16, step: 1,
+                           readout: "\(store.paletteCount)")
+                }
+
                 Toggle("Curvas Bézier", isOn: $store.vectorOptions.curves)
                 Toggle("Invertir", isOn: $store.vectorOptions.invert)
                 Toggle("Solo contorno", isOn: $store.vectorOptions.strokeOnly)

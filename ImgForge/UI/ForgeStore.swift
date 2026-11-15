@@ -1,6 +1,23 @@
 import SwiftUI
 import Observation
 
+/// Bandera compartida con el trabajo en segundo plano.
+/// `Task.isCancelled` no llega al interior de un bucle síncrono.
+final class CancelToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+
+    var isCancelled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return flag
+    }
+
+    func cancel() {
+        lock.lock(); defer { lock.unlock() }
+        flag = true
+    }
+}
+
 @Observable
 @MainActor
 final class ForgeStore {
@@ -18,8 +35,22 @@ final class ForgeStore {
     var svg: Vectorizer.Result?
     var splitEnabled = true
 
-    var upscaleOptions = Upscaler.Options() { didSet { scheduleDraft() } }
-    var vectorOptions = Vectorizer.Options()
+    var upscaleOptions = Upscaler.Options() {
+        didSet { scheduleDraft(); persist() }
+    }
+    var vectorOptions = Vectorizer.Options() { didSet { persist() } }
+
+    /// `ColorMode` no se edita bien desde un control; se expone en dos piezas.
+    var vectorInColor: Bool {
+        get { if case .palette = vectorOptions.colorMode { return true }; return false }
+        set { vectorOptions.colorMode = newValue ? .palette(paletteCount) : .mono }
+    }
+
+    var paletteCount: Int = 8 {
+        didSet {
+            if vectorInColor { vectorOptions.colorMode = .palette(paletteCount) }
+        }
+    }
 
     private(set) var isRendering = false
     private(set) var isDrafting = false
@@ -28,6 +59,68 @@ final class ForgeStore {
 
     @ObservationIgnored private var draftTask: Task<Void, Never>?
     @ObservationIgnored private var renderTask: Task<Void, Never>?
+    @ObservationIgnored private var token = CancelToken()
+
+    init() {
+        restore()
+    }
+
+    // MARK: - Persistencia
+
+    private enum Key {
+        static let scale = "forge.scale"
+        static let method = "forge.method"
+        static let sharpen = "forge.sharpen"
+        static let noise = "forge.noise"
+        static let engine = "forge.engine"
+        static let mode = "forge.mode"
+        static let curves = "forge.curves"
+        static let simplify = "forge.simplify"
+        static let color = "forge.color"
+        static let palette = "forge.palette"
+    }
+
+    private var restoring = false
+
+    private func persist() {
+        guard !restoring else { return }
+        let d = UserDefaults.standard
+        d.set(Double(upscaleOptions.scale), forKey: Key.scale)
+        d.set(upscaleOptions.method.rawValue, forKey: Key.method)
+        d.set(Double(upscaleOptions.sharpen), forKey: Key.sharpen)
+        d.set(upscaleOptions.noiseReduction, forKey: Key.noise)
+        d.set(upscaleOptions.engine.rawValue, forKey: Key.engine)
+        d.set(mode.rawValue, forKey: Key.mode)
+        d.set(vectorOptions.curves, forKey: Key.curves)
+        d.set(Double(vectorOptions.simplify), forKey: Key.simplify)
+        d.set(vectorInColor, forKey: Key.color)
+        d.set(paletteCount, forKey: Key.palette)
+    }
+
+    private func restore() {
+        let d = UserDefaults.standard
+        guard d.object(forKey: Key.scale) != nil else { return }
+        restoring = true
+        defer { restoring = false }
+
+        upscaleOptions.scale = CGFloat(d.double(forKey: Key.scale))
+        if let m = Upscaler.Method(rawValue: d.string(forKey: Key.method) ?? "") {
+            upscaleOptions.method = m
+        }
+        upscaleOptions.sharpen = Float(d.double(forKey: Key.sharpen))
+        upscaleOptions.noiseReduction = d.bool(forKey: Key.noise)
+        if let e = Upscaler.Engine(rawValue: d.string(forKey: Key.engine) ?? "") {
+            upscaleOptions.engine = e
+        }
+        if let m = Mode(rawValue: d.string(forKey: Key.mode) ?? "") {
+            mode = m
+        }
+        vectorOptions.curves = d.bool(forKey: Key.curves)
+        let simplify = Float(d.double(forKey: Key.simplify))
+        if simplify > 0 { vectorOptions.simplify = simplify }
+        paletteCount = max(2, min(16, d.integer(forKey: Key.palette)))
+        vectorOptions.colorMode = d.bool(forKey: Key.color) ? .palette(paletteCount) : .mono
+    }
 
     // MARK: - Derivados
 
@@ -119,6 +212,8 @@ final class ForgeStore {
             return
         }
         renderTask?.cancel()
+        token.cancel()
+        token = CancelToken()
         isRendering = true
         error = nil
         status = nil
@@ -126,6 +221,7 @@ final class ForgeStore {
         let mode = self.mode
         let up = upscaleOptions
         let vec = vectorOptions
+        let token = self.token
 
         renderTask = Task { [weak self] in
             let outcome: Result<(UIImage?, Vectorizer.Result?), Error> =
@@ -133,9 +229,15 @@ final class ForgeStore {
                     do {
                         switch mode {
                         case .upscale:
-                            return .success((try Upscaler.run(src, options: up), nil))
+                            let image = try Upscaler.run(
+                                src, options: up,
+                                isCancelled: { token.isCancelled })
+                            return .success((image, nil))
                         case .vector:
-                            return .success((nil, try Vectorizer.run(src, options: vec)))
+                            let vector = try Vectorizer.run(
+                                src, options: vec,
+                                isCancelled: { token.isCancelled })
+                            return .success((nil, vector))
                         }
                     } catch {
                         return .failure(error)
@@ -156,15 +258,21 @@ final class ForgeStore {
                     self.status = "\(vector.pathCount) trazos · \(vector.byteCount / 1024) KB"
                 }
             case .failure(let e):
-                self.error = e.localizedDescription
+                if case ForgeError.cancelled = e {
+                    self.status = "Cancelado."
+                } else {
+                    self.error = e.localizedDescription
+                }
             }
             self.isRendering = false
         }
     }
 
     func cancel() {
+        token.cancel()
         renderTask?.cancel()
         isRendering = false
+        status = "Cancelado."
     }
 
     // MARK: - Export

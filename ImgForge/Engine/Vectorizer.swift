@@ -32,7 +32,9 @@ enum Vectorizer {
 
     private static let context = CIContext(options: [.cacheIntermediates: false])
 
-    static func run(_ input: UIImage, options: Options) throws -> Result {
+    static func run(_ input: UIImage,
+                    options: Options,
+                    isCancelled: () -> Bool = { false }) throws -> Result {
         guard let cg = input.cgImage else { throw ForgeError.decodeFailed }
 
         var groups: [(fill: String, paths: [String])] = []
@@ -45,6 +47,7 @@ enum Vectorizer {
         case .palette(let k):
             let layers = try ColorQuantizer.layers(from: cg, count: k)
             for layer in layers {
+                if isCancelled() { throw ForgeError.cancelled }
                 guard let paths = try? trace(layer.mask, options: options),
                       !paths.isEmpty else { continue }
                 groups.append((layer.hex, paths))
