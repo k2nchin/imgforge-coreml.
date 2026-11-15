@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var pick: PhotosPickerItem?
     @State private var shareURL: URL?
     @State private var saving = false
+    @State private var fullscreen = false
     @Environment(\.dynamicTypeSize) private var typeSize
 
     /// A tamaños accesibles los controles se apilan en vez de comprimirse.
@@ -36,6 +37,21 @@ struct ContentView: View {
                             ProgressView()
                                 .controlSize(.small)
                                 .padding(20)
+                        }
+                    }
+                    .overlay(alignment: .bottomLeading) {
+                        if store.source != nil {
+                            Button {
+                                fullscreen = true
+                            } label: {
+                                Label("Pantalla completa", systemImage: "arrow.up.left.and.arrow.down.right")
+                                    .font(.caption.weight(.semibold))
+                                    .labelStyle(.iconOnly)
+                                    .frame(width: 36, height: 36)
+                                    .background(.ultraThinMaterial, in: Circle())
+                            }
+                            .padding(26)
+                            .accessibilityLabel("Ver a pantalla completa")
                         }
                     }
 
@@ -118,6 +134,13 @@ struct ContentView: View {
                 set: { shareURL = $0?.url }
             )) { item in
                 ShareSheet(urls: [item.url])
+            }
+            .fullScreenCover(isPresented: $fullscreen) {
+                FullscreenPreview(
+                    before: store.source,
+                    after: store.preview ?? store.result,
+                    splitEnabled: $store.splitEnabled
+                )
             }
         }
     }
