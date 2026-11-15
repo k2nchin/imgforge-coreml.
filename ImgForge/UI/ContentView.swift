@@ -118,6 +118,13 @@ struct ContentView: View {
             Label("Ninguna imagen", systemImage: "photo.on.rectangle.angled")
         } description: {
             Text("Carga un PNG o JPG para ampliarlo o convertirlo en vector.")
+        } actions: {
+            PhotosPicker(selection: $pick, matching: .images) {
+                Label("Elegir de Fotos", systemImage: "photo.badge.plus")
+                    .frame(maxWidth: 260, minHeight: 28)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
         }
     }
 

@@ -39,6 +39,13 @@ struct BatchView: View {
             Label("Cola vacía", systemImage: "square.stack.3d.up")
         } description: {
             Text("Añade imágenes para procesarlas todas con el mismo preset.")
+        } actions: {
+            PhotosPicker(selection: $picks, maxSelectionCount: 50, matching: .images) {
+                Label("Elegir de Fotos", systemImage: "photo.badge.plus")
+                    .frame(maxWidth: 260, minHeight: 28)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
         }
     }
 
