@@ -461,3 +461,121 @@ final class NeuralBudgetTests: XCTestCase {
                       "Lo que el deslizador permite, el motor debe aceptarlo")
     }
 }
+
+final class ResizerTests: XCTestCase {
+
+    private var wide: UIImage {
+        renderAtScale1(CGSize(width: 400, height: 200)) { ctx in
+            UIColor.systemIndigo.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 400, height: 200))
+        }
+    }
+
+    func testStretchHitsExactSize() throws {
+        var o = Resizer.Options(); o.width = 300; o.height = 300; o.fit = .stretch
+        let out = try Resizer.run(wide, options: o)
+        XCTAssertEqual(out.cgImage?.width, 300)
+        XCTAssertEqual(out.cgImage?.height, 300)
+    }
+
+    func testCoverFillsAndCrops() throws {
+        var o = Resizer.Options(); o.width = 300; o.height = 300; o.fit = .cover
+        let out = try Resizer.run(wide, options: o)
+        XCTAssertEqual(out.cgImage?.width, 300)
+        XCTAssertEqual(out.cgImage?.height, 300)
+    }
+
+    func testContainKeepsWholeImage() throws {
+        var o = Resizer.Options(); o.width = 300; o.height = 300; o.fit = .contain
+        let out = try Resizer.run(wide, options: o)
+        XCTAssertEqual(out.cgImage?.width, 300)
+        XCTAssertEqual(out.cgImage?.height, 300)
+    }
+
+    /// Las tres opciones entregan el lienzo pedido; lo que cambia es el
+    /// contenido. Contener deja margen, así que tiene píxeles transparentes.
+    func testContainLeavesMarginAndCoverDoesNot() throws {
+        func transparentCorner(_ image: UIImage) -> Bool {
+            guard let cg = image.cgImage else { return false }
+            var px = [UInt8](repeating: 0, count: 4)
+            px.withUnsafeMutableBytes { ptr in
+                guard let base = ptr.baseAddress,
+                      let ctx = CGContext(data: base, width: 1, height: 1,
+                                          bitsPerComponent: 8, bytesPerRow: 4,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+                else { return }
+                ctx.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+            }
+            return px[3] < 10
+        }
+
+        var contain = Resizer.Options()
+        contain.width = 300; contain.height = 300; contain.fit = .contain
+        var cover = contain; cover.fit = .cover
+
+        XCTAssertTrue(transparentCorner(try Resizer.run(wide, options: contain)))
+        XCTAssertFalse(transparentCorner(try Resizer.run(wide, options: cover)))
+    }
+
+    func testRejectsAbsurdTarget() {
+        var o = Resizer.Options(); o.width = 40_000; o.height = 40_000
+        XCTAssertThrowsError(try Resizer.run(wide, options: o))
+    }
+}
+
+final class AdjustmentsTests: XCTestCase {
+
+    private var sample: UIImage {
+        renderAtScale1(CGSize(width: 120, height: 80)) { ctx in
+            UIColor(red: 0.4, green: 0.5, blue: 0.6, alpha: 1).setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 120, height: 80))
+        }
+    }
+
+    func testIdentityKeepsSize() throws {
+        let out = try Adjustments.apply(sample, options: Adjustments.Options())
+        XCTAssertEqual(out.cgImage?.width, 120)
+        XCTAssertEqual(out.cgImage?.height, 80)
+    }
+
+    func testCropTakesTheRequestedRegion() throws {
+        let half = CGRect(x: 0, y: 0, width: 0.5, height: 0.5)
+        let out = try Adjustments.apply(sample, options: Adjustments.Options(), crop: half)
+        XCTAssertEqual(out.cgImage?.width, 60)
+        XCTAssertEqual(out.cgImage?.height, 40)
+    }
+
+    func testQuarterTurnSwapsSides() throws {
+        var o = Adjustments.Options()
+        o.rotationQuarters = 1
+        let out = try Adjustments.apply(sample, options: o)
+        XCTAssertEqual(out.cgImage?.width, 80)
+        XCTAssertEqual(out.cgImage?.height, 120)
+    }
+
+    func testExposureChangesPixels() throws {
+        var o = Adjustments.Options()
+        o.exposure = 1.5
+        let brighter = try Adjustments.apply(sample, options: o)
+        XCTAssertNotNil(brighter.cgImage)
+        XCTAssertNotEqual(brighter.pngData(), sample.pngData())
+    }
+
+    func testActiveCountTracksEdits() {
+        var o = Adjustments.Options()
+        XCTAssertTrue(o.isIdentity)
+        XCTAssertEqual(o.activeCount, 0)
+        o.exposure = 0.5
+        o.saturation = 1.4
+        XCTAssertFalse(o.isIdentity)
+        XCTAssertEqual(o.activeCount, 2)
+    }
+
+    func testCancellationIsHonored() {
+        XCTAssertThrowsError(
+            try Adjustments.apply(sample, options: Adjustments.Options(),
+                                  isCancelled: { true })
+        )
+    }
+}

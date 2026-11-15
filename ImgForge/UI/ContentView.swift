@@ -16,6 +16,8 @@ struct ContentView: View {
         TabView {
             forge
                 .tabItem { Label("Forja", systemImage: "wand.and.rays") }
+            EditorView()
+                .tabItem { Label("Editor", systemImage: "slider.horizontal.below.rectangle") }
             BatchView()
                 .tabItem { Label("Lote", systemImage: "square.stack.3d.up") }
         }
