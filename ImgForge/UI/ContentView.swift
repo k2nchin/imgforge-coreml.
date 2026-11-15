@@ -178,7 +178,7 @@ struct ContentView: View {
             if store.mode == .upscale {
                 slider("Escala",
                        value: $store.upscaleOptions.scale.asDouble,
-                       range: 1...8, step: 0.5,
+                       range: 1...max(1.5, store.maxScale), step: 0.5,
                        readout: String(format: "%.1f×", store.upscaleOptions.scale))
 
                 Picker("Motor", selection: $store.upscaleOptions.engine) {

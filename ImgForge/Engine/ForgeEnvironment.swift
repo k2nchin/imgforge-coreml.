@@ -17,12 +17,25 @@ enum ForgeEnvironment {
     /// al menos un intermedio más. Se reserva una fracción conservadora de
     /// la RAM física y se recorta a un techo absoluto.
     static var maxOutputPixels: Int {
-        if isExtension { return 4_000_000 }          // ~16 MB de bitmap
+        if isExtension { return 6_000_000 }
 
-        // Una octava parte de la RAM, dividida entre 4 bytes por píxel
-        // y 2 buffers simultáneos.
-        let budget = Int(physicalMemory / 8) / 8
-        return min(24_000_000, max(4_000_000, budget))
+        // Un bitmap RGBA ocupa 4 bytes por píxel. Se reserva una
+        // dieciseisava parte de la RAM física para él, lo que en un
+        // teléfono de 6 GB da unos 100 MP, y se recorta a 64 MP:
+        // 256 MB de bitmap, que iOS concede sin matar el proceso.
+        let budget = Int(physicalMemory / 4) / 16
+        return min(64_000_000, max(6_000_000, budget))
+    }
+
+    /// Escala máxima que cabe para una imagen de este tamaño.
+    /// Sirve para limitar el deslizador en vez de dejar que el usuario
+    /// elija un valor que va a fallar.
+    static func maxScale(forPixels pixels: Int) -> Double {
+        guard pixels > 0 else { return 8 }
+        let limit = (Double(maxOutputPixels) / Double(pixels)).squareRoot()
+        // Se redondea hacia abajo al paso de 0.5 del deslizador.
+        let stepped = (limit * 2).rounded(.down) / 2
+        return min(8, max(1, stepped))
     }
 
     /// Baldosa de inferencia para el modelo neural.

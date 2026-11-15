@@ -139,6 +139,12 @@ final class ForgeStore {
         return "\(Int(CGFloat(cg.width) * s)) × \(Int(CGFloat(cg.height) * s))"
     }
 
+    /// Tope del deslizador para la imagen cargada.
+    var maxScale: Double {
+        guard let cg = source?.cgImage else { return 8 }
+        return ForgeEnvironment.maxScale(forPixels: cg.width * cg.height)
+    }
+
     var engineLabel: String {
         switch upscaleOptions.engine {
         case .neural:
@@ -154,6 +160,15 @@ final class ForgeStore {
 
     func load(_ image: UIImage) {
         source = image.normalizedOrientation()
+
+        // Una foto de 12 MP no admite 8×. Se baja la escala al tope real
+        // en vez de dejar que el usuario choque contra un error rojo.
+        let top = CGFloat(maxScale)
+        if upscaleOptions.scale > top {
+            upscaleOptions.scale = top
+            status = "Escala ajustada a \(String(format: "%.1f", top))× por el tamaño de la imagen."
+        }
+
         preview = nil
         result = nil
         svg = nil

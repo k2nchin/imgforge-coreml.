@@ -212,9 +212,24 @@ final class EnvironmentTests: XCTestCase {
 
     func testMemoryBudgetIsSane() {
         let p = ForgeEnvironment.maxOutputPixels
-        XCTAssertGreaterThanOrEqual(p, 4_000_000)
-        XCTAssertLessThanOrEqual(p, 24_000_000,
-                                 "Un techo alto mata la app antes de dibujar")
+        XCTAssertGreaterThanOrEqual(p, 6_000_000,
+                                    "Por debajo de esto ni 1.5× de una foto cabe")
+        XCTAssertLessThanOrEqual(p, 64_000_000,
+                                 "256 MB de bitmap es lo que iOS concede sin matar")
+    }
+
+    /// Una foto de 12 MP debe admitir al menos 2×; antes el tope de
+    /// 24 MP la rechazaba incluso a 1.5×.
+    func testTypicalPhotoAllowsUsefulScale() {
+        let twelveMP = 3024 * 4032
+        XCTAssertGreaterThanOrEqual(ForgeEnvironment.maxScale(forPixels: twelveMP), 2.0)
+    }
+
+    func testMaxScaleStaysOnSliderSteps() {
+        let s = ForgeEnvironment.maxScale(forPixels: 2774 * 4160)
+        XCTAssertEqual(s * 2, (s * 2).rounded(), accuracy: 0.001,
+                       "El tope debe caer en un paso de 0.5")
+        XCTAssertLessThanOrEqual(s, 8)
     }
 
     func testTestBundleIsNotAnExtension() {
