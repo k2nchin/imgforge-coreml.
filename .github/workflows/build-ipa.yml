@@ -1,0 +1,109 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: "Configuración de build"
+        type: choice
+        default: Release
+        options: [Release, Debug]
+      include_model:
+        description: "Incluir RealESRGAN.mlmodelc si existe el artifact"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - "ImgForge/**"
+      - "ImgForgeShare/**"
+      - "project.yml"
+      - ".github/workflows/build-ipa.yml"
+
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+          echo "SDKs:"
+          xcodebuild -showsdks | grep -i iphoneos || true
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec project.yml
+          ls -d ImgForge.xcodeproj
+
+      - name: Build archive
+        env:
+          CONFIG: ${{ github.event.inputs.configuration || 'Release' }}
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project ImgForge.xcodeproj \
+            -scheme ImgForge \
+            -configuration "$CONFIG" \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/ImgForge.xcarchive \
+            -skipPackagePluginValidation \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ENABLE_BITCODE=NO \
+            | tee build.log | xcpretty || {
+              echo "::group::Errores"
+              grep -E "error:|warning: .*deprecated" build.log | head -60
+              echo "::endgroup::"
+              exit 1
+            }
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          APP="build/ImgForge.xcarchive/Products/Applications/ImgForge.app"
+          test -d "$APP" || { echo "No se generó el .app" >&2; exit 1; }
+
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R "$APP" build/Payload/
+
+          cd build
+          zip -qry ImgForge-unsigned.ipa Payload
+          cd ..
+
+          echo "Tamaño:"
+          ls -lh build/ImgForge-unsigned.ipa
+          echo "Contenido del bundle:"
+          ls build/Payload/ImgForge.app | head -20
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImgForge-unsigned-ipa
+          path: build/ImgForge-unsigned.ipa
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 7
+          if-no-files-found: ignore
