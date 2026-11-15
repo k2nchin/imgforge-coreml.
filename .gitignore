@@ -1,0 +1,9 @@
+build/
+weights/
+*.pth
+*.mlpackage
+*.mlmodelc
+__pycache__/
+*.pyc
+.DS_Store
+.venv/

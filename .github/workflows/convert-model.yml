@@ -1,0 +1,118 @@
+name: Convert Real-ESRGAN to Core ML
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Modelo a convertir"
+        type: choice
+        default: realesrgan-x4plus
+        options:
+          - realesrgan-x4plus
+          - realesrgan-x4plus-anime
+          - realesrgan-x2plus
+      tile:
+        description: "Tamano de entrada fijo (px)"
+        default: "512"
+      compute:
+        description: "Precision"
+        type: choice
+        default: float16
+        options: [float16, float32]
+
+jobs:
+  convert:
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('.github/workflows/convert-model.yml') }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            "torch==2.4.1" \
+            "torchvision==0.19.1" \
+            "coremltools==8.1" \
+            "numpy<2" \
+            "basicsr-fixed==1.4.2" \
+            "Pillow"
+
+      - name: Cache weights
+        id: weights
+        uses: actions/cache@v4
+        with:
+          path: weights
+          key: esrgan-weights-${{ github.event.inputs.variant }}
+
+      - name: Download weights
+        if: steps.weights.outputs.cache-hit != 'true'
+        env:
+          VARIANT: ${{ github.event.inputs.variant }}
+        run: |
+          set -euo pipefail
+          mkdir -p weights
+          case "$VARIANT" in
+            realesrgan-x4plus)
+              URL="https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth" ;;
+            realesrgan-x4plus-anime)
+              URL="https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth" ;;
+            realesrgan-x2plus)
+              URL="https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth" ;;
+            *) echo "Variante desconocida: $VARIANT" >&2; exit 1 ;;
+          esac
+          echo "Descargando $URL"
+          curl -fsSL --retry 3 -o "weights/${VARIANT}.pth" "$URL"
+          ls -lh weights/
+
+      - name: Convert
+        env:
+          VARIANT: ${{ github.event.inputs.variant }}
+          TILE: ${{ github.event.inputs.tile }}
+          COMPUTE: ${{ github.event.inputs.compute }}
+        run: |
+          set -euo pipefail
+          python scripts/convert_esrgan.py \
+            --weights "weights/${VARIANT}.pth" \
+            --variant "$VARIANT" \
+            --tile "$TILE" \
+            --precision "$COMPUTE" \
+            --out build/RealESRGAN.mlpackage \
+            --verbose
+
+      - name: Compile to .mlmodelc
+        run: |
+          set -euo pipefail
+          xcrun coremlcompiler compile build/RealESRGAN.mlpackage build/
+          xcrun coremlcompiler generate build/RealESRGAN.mlpackage \
+            --language Swift build/generated/
+          ls -R build/
+
+      - name: Smoke test
+        run: python scripts/smoke_test.py --model build/RealESRGAN.mlpackage
+
+      - name: Package
+        run: |
+          cd build
+          zip -ry RealESRGAN-CoreML.zip RealESRGAN.mlmodelc RealESRGAN.mlpackage generated
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RealESRGAN-CoreML-${{ github.event.inputs.variant }}
+          path: build/RealESRGAN-CoreML.zip
+          retention-days: 30
+          if-no-files-found: error
