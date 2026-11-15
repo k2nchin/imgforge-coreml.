@@ -53,7 +53,7 @@ enum BezierFitter {
     }
 
     /// Un vértice es esquina cuando la dirección gira más que el umbral.
-    private static func detectCorners(_ p: [SIMD2<Float>],
+    static func detectCorners(_ p: [SIMD2<Float>],
                                       threshold: Float) -> [Int] {
         let n = p.count
         guard n >= 4 else { return [] }

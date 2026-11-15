@@ -330,28 +330,64 @@ final class CornerFittingTests: XCTestCase {
                        "Un círculo no debe producir segmentos rectos")
     }
 
+    /// El número de tramos del path no mide las esquinas: con pocas
+    /// esquinas el ajuste subdivide más para alcanzar la tolerancia.
+    /// Lo que se prueba es la detección en sí.
+    func testDetectorFindsSquareCorners() {
+        var pts: [SIMD2<Float>] = []
+        let n = 30
+        for i in 0..<n { pts.append(SIMD2(Float(i) / Float(n), 0)) }
+        for i in 0..<n { pts.append(SIMD2(1, Float(i) / Float(n))) }
+        for i in 0..<n { pts.append(SIMD2(1 - Float(i) / Float(n), 1)) }
+        for i in 0..<n { pts.append(SIMD2(0, 1 - Float(i) / Float(n))) }
+
+        let corners = BezierFitter.detectCorners(pts, threshold: 60)
+        XCTAssertEqual(corners.count, 4, "Un cuadrado tiene cuatro esquinas")
+    }
+
+    func testDetectorIgnoresSmoothCurve() {
+        let pts = (0..<120).map { i -> SIMD2<Float> in
+            let a = Float(i) / 120 * 2 * .pi
+            return SIMD2(0.5 + 0.4 * cos(a), 0.5 + 0.4 * sin(a))
+        }
+        XCTAssertTrue(BezierFitter.detectCorners(pts, threshold: 60).isEmpty,
+                      "Un círculo no tiene esquinas")
+    }
+
     /// Bajar el umbral detecta más esquinas, igual que subir el
     /// deslizador Esquinas de Image Trace.
     func testLowerThresholdFindsMoreCorners() {
         let pts = (0..<80).map { i -> SIMD2<Float> in
             let a = Float(i) / 80 * 2 * .pi
-            let r: Float = i % 10 == 0 ? 0.45 : 0.3     // estrella irregular
+            let r: Float = i % 10 == 0 ? 0.45 : 0.3
             return SIMD2(0.5 + r * cos(a), 0.5 + r * sin(a))
         }
-        let strict = BezierFitter.fit(pts, error: 0.002, cornerAngle: 120)
-        let loose = BezierFitter.fit(pts, error: 0.002, cornerAngle: 30)
-
-        func segments(_ s: String) -> Int {
-            (s.components(separatedBy: " C").count - 1)
-                + (s.components(separatedBy: " L").count - 1)
-        }
-        XCTAssertGreaterThanOrEqual(segments(loose), segments(strict))
+        let loose = BezierFitter.detectCorners(pts, threshold: 30).count
+        let strict = BezierFitter.detectCorners(pts, threshold: 120).count
+        XCTAssertGreaterThanOrEqual(loose, strict)
     }
 }
 
 final class AbuttingTests: XCTestCase {
 
-    func testDilationCoversTheSeam() throws {
+    /// `coverage` cuenta píxeles asignados y la dilatación no los cambia:
+    /// lo que crece es la máscara. Hay que medirla a ella.
+    private func whitePixels(_ cg: CGImage) -> Int {
+        let w = cg.width, h = cg.height
+        var bytes = [UInt8](repeating: 0, count: w * h)
+        bytes.withUnsafeMutableBytes { ptr in
+            guard let base = ptr.baseAddress,
+                  let ctx = CGContext(data: base, width: w, height: h,
+                                      bitsPerComponent: 8, bytesPerRow: w,
+                                      space: CGColorSpaceCreateDeviceGray(),
+                                      bitmapInfo: CGImageAlphaInfo.none.rawValue)
+            else { return }
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        }
+        return bytes.filter { $0 > 127 }.count
+    }
+
+    func testDilationGrowsTheMask() throws {
         let cg = renderAtScale1(CGSize(width: 80, height: 80)) { ctx in
             UIColor.red.setFill()
             ctx.fill(CGRect(x: 0, y: 0, width: 40, height: 80))
@@ -362,10 +398,10 @@ final class AbuttingTests: XCTestCase {
         let plain = try ColorQuantizer.layers(from: cg, count: 2, dilate: false)
         let abut = try ColorQuantizer.layers(from: cg, count: 2, dilate: true)
 
-        let plainCoverage = plain.reduce(0) { $0 + $1.coverage }
-        let abutCoverage = abut.reduce(0) { $0 + $1.coverage }
+        let before = plain.reduce(0) { $0 + whitePixels($1.mask) }
+        let after = abut.reduce(0) { $0 + whitePixels($1.mask) }
 
-        XCTAssertGreaterThan(abutCoverage, plainCoverage,
+        XCTAssertGreaterThan(after, before,
                              "Las capas contiguas se solapan, no dejan grieta")
     }
 }
