@@ -44,10 +44,18 @@ final class BezierFitterTests: XCTestCase {
     }
 }
 
+/// El renderer usa la escala de la pantalla (3× en simulador), lo que
+/// multiplicaba los píxeles reales. Estos tests necesitan escala 1.
+func renderAtScale1(_ size: CGSize, _ draw: (UIGraphicsImageRendererContext) -> Void) -> UIImage {
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    return UIGraphicsImageRenderer(size: size, format: format).image(actions: draw)
+}
+
 final class ColorQuantizerTests: XCTestCase {
 
     private func image(colors: [UIColor], size: CGSize = CGSize(width: 64, height: 64)) -> CGImage {
-        UIGraphicsImageRenderer(size: size).image { ctx in
+        renderAtScale1(size) { ctx in
             let band = size.height / CGFloat(colors.count)
             for (i, c) in colors.enumerated() {
                 c.setFill()
@@ -85,7 +93,7 @@ final class ColorQuantizerTests: XCTestCase {
 final class UpscalerTests: XCTestCase {
 
     private var sample: UIImage {
-        UIGraphicsImageRenderer(size: CGSize(width: 32, height: 32)).image { ctx in
+        renderAtScale1(CGSize(width: 32, height: 32)) { ctx in
             UIColor.systemTeal.setFill()
             ctx.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
         }
@@ -136,7 +144,7 @@ final class UpscalerTests: XCTestCase {
 final class VectorizerTests: XCTestCase {
 
     private var shape: UIImage {
-        UIGraphicsImageRenderer(size: CGSize(width: 128, height: 128)).image { ctx in
+        renderAtScale1(CGSize(width: 128, height: 128)) { ctx in
             UIColor.white.setFill()
             ctx.fill(CGRect(x: 0, y: 0, width: 128, height: 128))
             UIColor.black.setFill()
@@ -159,16 +167,37 @@ final class VectorizerTests: XCTestCase {
         XCTAssertEqual(tags, r.pathCount)
     }
 
+    /// Con curvas activas el peso no es monótono: una polilínea gruesa
+    /// produce una cúbica por segmento, así que simplificar puede pesar
+    /// más. La relación solo se sostiene sobre la polilínea cruda.
     func testSimplifyReducesDetail() throws {
         var fine = Vectorizer.Options()
         fine.simplify = 0.0005
+        fine.curves = false
+
         var coarse = Vectorizer.Options()
         coarse.simplify = 0.02
+        coarse.curves = false
 
         let a = try Vectorizer.run(shape, options: fine)
         let b = try Vectorizer.run(shape, options: coarse)
         XCTAssertGreaterThanOrEqual(a.byteCount, b.byteCount,
-                                    "Simplificar más debe pesar menos")
+                                    "Sobre polilínea, simplificar debe pesar menos")
+    }
+
+    /// Las curvas existen para pesar menos que la polilínea equivalente
+    /// a igual nivel de simplificación.
+    func testCurvesBeatPolylineAtSameDetail() throws {
+        var poly = Vectorizer.Options()
+        poly.curves = false
+        poly.simplify = 0.0005
+
+        var curved = poly
+        curved.curves = true
+
+        let a = try Vectorizer.run(shape, options: poly)
+        let b = try Vectorizer.run(shape, options: curved)
+        XCTAssertLessThan(b.byteCount, a.byteCount)
     }
 }
 
