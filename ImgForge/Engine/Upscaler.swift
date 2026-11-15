@@ -44,10 +44,38 @@ enum Upscaler {
         let engine: Engine
     }
 
-    /// `true` si el modelo cabe: la ruta neural construye un lienzo 4×,
-    /// es decir 16 píxeles de salida por cada uno de entrada.
-    static func neuralFits(_ cg: CGImage) -> Bool {
-        cg.width * cg.height * 16 <= ForgeEnvironment.maxOutputPixels
+    /// La ruta neural siempre cabe si la salida pedida cabe: cuando el
+    /// lienzo 4× no entra en memoria, la entrada se reduce antes para que
+    /// el 4× del modelo aterrice exactamente en el tamaño pedido.
+    static func neuralFits(_ cg: CGImage, scale: CGFloat) -> Bool {
+        Int(CGFloat(cg.width) * scale) * Int(CGFloat(cg.height) * scale)
+            <= ForgeEnvironment.maxOutputPixels
+    }
+
+    /// Decide qué se le da al modelo.
+    ///
+    /// El modelo multiplica por 4 y nada más. Para una escala menor hay
+    /// dos caminos: ampliar 4× y reducir después, que da mejor resultado
+    /// pero necesita el lienzo grande en memoria; o reducir la entrada
+    /// antes, que cabe siempre. Se prefiere el primero cuando entra.
+    private static func prepareNeural(_ cg: CGImage,
+                                      scale: CGFloat) throws -> (CGImage, CGFloat) {
+        let fourTimes = cg.width * cg.height * 16
+        if fourTimes <= ForgeEnvironment.maxOutputPixels || scale >= NeuralUpscaler.nativeScale {
+            return (cg, scale)
+        }
+
+        let pre = scale / NeuralUpscaler.nativeScale     // < 1
+        let w = max(1, Int((CGFloat(cg.width) * pre).rounded()))
+        let h = max(1, Int((CGFloat(cg.height) * pre).rounded()))
+
+        let shrunk = try resize(CIImage(cgImage: cg), scale: pre, method: .lanczos)
+        guard let out = context.createCGImage(
+            shrunk, from: CGRect(x: 0, y: 0, width: w, height: h)
+        ) else { throw ForgeError.renderFailed }
+
+        // Ya reducida, el 4× del modelo da el tamaño pedido: sin reescalar después.
+        return (out, NeuralUpscaler.nativeScale)
     }
 
     static func run(_ input: UIImage,
@@ -77,28 +105,26 @@ enum Upscaler {
         }
 
         let available = NeuralUpscaler.isAvailable
-        let fits = neuralFits(cg)
+
+        func neural() throws -> UIImage {
+            let (input, factor) = try prepareNeural(cg, scale: options.scale)
+            var opts = options
+            opts.scale = factor
+            return try NeuralUpscaler.run(input, options: opts,
+                                          context: context,
+                                          isCancelled: isCancelled)
+        }
 
         switch options.engine {
         case .neural:
             guard available else {
                 throw ForgeError.modelMissing(NeuralUpscaler.modelName)
             }
-            guard fits else {
-                throw ForgeError.tooLarge(pixels: cg.width * cg.height * 16,
-                                          limit: maxOutputPixels)
-            }
-            let image = try NeuralUpscaler.run(cg, options: options,
-                                               context: context,
-                                               isCancelled: isCancelled)
-            return Outcome(image: image, engine: .neural)
+            return Outcome(image: try neural(), engine: .neural)
 
-        case .auto where available && fits:
+        case .auto where available:
             do {
-                let image = try NeuralUpscaler.run(cg, options: options,
-                                                   context: context,
-                                                   isCancelled: isCancelled)
-                return Outcome(image: image, engine: .neural)
+                return Outcome(image: try neural(), engine: .neural)
             } catch ForgeError.cancelled {
                 throw ForgeError.cancelled
             } catch {

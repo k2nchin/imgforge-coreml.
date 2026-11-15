@@ -420,3 +420,44 @@ final class AbuttingTests: XCTestCase {
                              "Las capas contiguas se solapan, no dejan grieta")
     }
 }
+
+final class NeuralBudgetTests: XCTestCase {
+
+    /// El caso que fallaba en el teléfono: una foto de 11.5 MP con el
+    /// motor Neural. El lienzo 4× son 184 MP y no cabe, pero la salida
+    /// pedida a 1.5× son 26 MP y sí. Antes se rechazaba igual.
+    func testPhoneSizedPhotoFitsNeuralPath() {
+        let cg = renderAtScale1(CGSize(width: 2774, height: 4160)) { ctx in
+            UIColor.gray.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 2774, height: 4160))
+        }.cgImage!
+
+        XCTAssertTrue(Upscaler.neuralFits(cg, scale: 1.5),
+                      "1.5× de una foto de teléfono debe caber")
+        XCTAssertTrue(Upscaler.neuralFits(cg, scale: 2.0))
+    }
+
+    func testAbsurdScaleStillRejected() {
+        let cg = renderAtScale1(CGSize(width: 2774, height: 4160)) { ctx in
+            UIColor.gray.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 2774, height: 4160))
+        }.cgImage!
+
+        XCTAssertFalse(Upscaler.neuralFits(cg, scale: 8),
+                       "8× de 11.5 MP son 738 MP: eso no cabe en ningún teléfono")
+    }
+
+    /// El tope del deslizador y lo que acepta la ruta neural tienen que
+    /// coincidir, o el usuario puede elegir algo que luego falla.
+    func testSliderCeilingAgreesWithNeuralPath() {
+        let pixels = 2774 * 4160
+        let cg = renderAtScale1(CGSize(width: 2774, height: 4160)) { ctx in
+            UIColor.gray.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 2774, height: 4160))
+        }.cgImage!
+
+        let top = ForgeEnvironment.maxScale(forPixels: pixels)
+        XCTAssertTrue(Upscaler.neuralFits(cg, scale: CGFloat(top)),
+                      "Lo que el deslizador permite, el motor debe aceptarlo")
+    }
+}
