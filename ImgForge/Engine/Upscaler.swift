@@ -39,14 +39,34 @@ enum Upscaler {
 
     // MARK: - Entrada
 
+    struct Outcome {
+        let image: UIImage
+        let engine: Engine
+    }
+
+    /// `true` si el modelo cabe: la ruta neural construye un lienzo 4×,
+    /// es decir 16 píxeles de salida por cada uno de entrada.
+    static func neuralFits(_ cg: CGImage) -> Bool {
+        cg.width * cg.height * 16 <= ForgeEnvironment.maxOutputPixels
+    }
+
     static func run(_ input: UIImage,
                     options: Options,
                     quality: Quality = .full,
                     isCancelled: () -> Bool = { false }) throws -> UIImage {
+        try runDetailed(input, options: options,
+                        quality: quality, isCancelled: isCancelled).image
+    }
+
+    static func runDetailed(_ input: UIImage,
+                            options: Options,
+                            quality: Quality = .full,
+                            isCancelled: () -> Bool = { false }) throws -> Outcome {
         guard let cg = input.cgImage else { throw ForgeError.decodeFailed }
 
         if case .draft(let maxEdge) = quality {
-            return try draft(cg, options: options, maxEdge: maxEdge)
+            return Outcome(image: try draft(cg, options: options, maxEdge: maxEdge),
+                           engine: .classic)
         }
 
         let outW = Int(CGFloat(cg.width) * options.scale)
@@ -56,34 +76,44 @@ enum Upscaler {
             throw ForgeError.tooLarge(pixels: outW * outH, limit: maxOutputPixels)
         }
 
-        let useNeural: Bool
+        let available = NeuralUpscaler.isAvailable
+        let fits = neuralFits(cg)
+
         switch options.engine {
         case .neural:
-            useNeural = true
-        case .classic:
-            useNeural = false
-        case .auto:
-            useNeural = NeuralUpscaler.isAvailable && cg.width * cg.height <= 4_000_000
-        }
+            guard available else {
+                throw ForgeError.modelMissing(NeuralUpscaler.modelName)
+            }
+            guard fits else {
+                throw ForgeError.tooLarge(pixels: cg.width * cg.height * 16,
+                                          limit: maxOutputPixels)
+            }
+            let image = try NeuralUpscaler.run(cg, options: options,
+                                               context: context,
+                                               isCancelled: isCancelled)
+            return Outcome(image: image, engine: .neural)
 
-        if useNeural && NeuralUpscaler.isAvailable {
+        case .auto where available && fits:
             do {
-                return try NeuralUpscaler.run(cg, options: options,
-                                              context: context,
-                                              isCancelled: isCancelled)
+                let image = try NeuralUpscaler.run(cg, options: options,
+                                                   context: context,
+                                                   isCancelled: isCancelled)
+                return Outcome(image: image, engine: .neural)
             } catch ForgeError.cancelled {
                 throw ForgeError.cancelled
             } catch {
-                if options.engine == .neural { throw error }
+                // El modelo falló; el motor clásico sigue siendo válido.
             }
-        } else if useNeural && options.engine == .neural {
-            // La extensión no tiene presupuesto de memoria para el modelo.
-            throw ForgeError.modelMissing(NeuralUpscaler.modelName)
+
+        default:
+            break
         }
 
         if isCancelled() { throw ForgeError.cancelled }
-        return try classic(cg, options: options,
-                           size: CGSize(width: outW, height: outH))
+
+        let image = try classic(cg, options: options,
+                                size: CGSize(width: outW, height: outH))
+        return Outcome(image: image, engine: .classic)
     }
 
     // MARK: - Draft

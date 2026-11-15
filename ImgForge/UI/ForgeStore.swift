@@ -224,15 +224,15 @@ final class ForgeStore {
         let token = self.token
 
         renderTask = Task { [weak self] in
-            let outcome: Result<(UIImage?, Vectorizer.Result?), Error> =
+            let outcome: Result<(Upscaler.Outcome?, Vectorizer.Result?), Error> =
                 await Task.detached(priority: .userInitiated) {
                     do {
                         switch mode {
                         case .upscale:
-                            let image = try Upscaler.run(
+                            let result = try Upscaler.runDetailed(
                                 src, options: up,
                                 isCancelled: { token.isCancelled })
-                            return .success((image, nil))
+                            return .success((result, nil))
                         case .vector:
                             let vector = try Vectorizer.run(
                                 src, options: vec,
@@ -247,11 +247,13 @@ final class ForgeStore {
             guard !Task.isCancelled, let self else { return }
 
             switch outcome {
-            case .success(let (image, vector)):
-                if let image {
-                    self.result = image
-                    self.preview = image
-                    self.status = "\(self.outputSize) · \(self.engineLabel)"
+            case .success(let (upscaled, vector)):
+                if let upscaled {
+                    self.result = upscaled.image
+                    self.preview = upscaled.image
+                    let motor = upscaled.engine == .neural
+                        ? "Neural Engine" : "Core Image"
+                    self.status = "\(self.outputSize) · \(motor)"
                 }
                 if let vector {
                     self.svg = vector

@@ -1,4 +1,3 @@
-import Vision
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import UIKit
@@ -69,53 +68,32 @@ enum Vectorizer {
     // MARK: - Trazado
 
     private static func trace(_ cg: CGImage, options: Options) throws -> [String] {
-        let request = VNDetectContoursRequest()
-        request.contrastAdjustment = 1.0
-        request.detectsDarkOnLight = true
-        request.maximumImageDimension = 1024
+        let contours = try ContourTracer.trace(mask: cg)
+        guard !contours.isEmpty else { return [] }
 
-        do {
-            try VNImageRequestHandler(cgImage: cg, options: [:]).perform([request])
-        } catch {
-            throw ForgeError.visionFailed(error.localizedDescription)
-        }
-
-        guard let obs = request.results?.first as? VNContoursObservation else {
-            throw ForgeError.noContours
-        }
-
-        let epsilon = max(Float(0.0001), options.simplify)
         var out: [String] = []
+        for c in contours {
+            // El área viene con signo; para filtrar manchas importa el tamaño.
+            guard abs(c.area) >= options.minArea else { continue }
 
-        /// La simplificación vive en VNContour, no en la observación,
-        /// y se aplica contorno por contorno.
-        func walk(_ contour: VNContour, depth: Int) {
-            let simplified = (try? contour.polygonApproximation(epsilon: epsilon)) ?? contour
-            let pts = simplified.normalizedPoints.map { SIMD2<Float>($0.x, 1 - $0.y) }
+            let pts = ContourTracer.simplify(c.points, epsilon: options.simplify)
+            guard pts.count >= 3 else { continue }
 
-            if pts.count >= 3, area(pts) >= options.minArea {
-                out.append(options.curves
-                           ? BezierFitter.fit(pts, error: options.curveError)
-                           : polyline(pts))
-            }
-            guard depth < 6 else { return }
-            for child in contour.childContours {
-                walk(child, depth: depth + 1)
-            }
-        }
-
-        for contour in obs.topLevelContours {
-            walk(contour, depth: 0)
+            out.append(options.curves
+                       ? BezierFitter.fit(pts, error: options.curveError)
+                       : polyline(pts))
         }
         return out
     }
 
+    /// Monocromo y, por defecto, invertido: el trazador busca regiones
+    /// en blanco, y en un logo la tinta es lo oscuro.
     private static func preprocess(_ cg: CGImage, invert: Bool) throws -> CGImage {
         let mono = CIFilter.photoEffectMono()
         mono.inputImage = CIImage(cgImage: cg)
         guard var out = mono.outputImage else { throw ForgeError.filterFailed("mono") }
 
-        if invert {
+        if !invert {
             let f = CIFilter.colorInvert()
             f.inputImage = out
             guard let i = f.outputImage else { throw ForgeError.filterFailed("invert") }
@@ -160,13 +138,4 @@ enum Vectorizer {
         return d + " Z"
     }
 
-    private static func area(_ pts: [SIMD2<Float>]) -> Float {
-        var acc: Float = 0
-        for i in pts.indices {
-            let a = pts[i]
-            let b = pts[(i + 1) % pts.count]
-            acc += a.x * b.y - b.x * a.y
-        }
-        return abs(acc) * 0.5
-    }
 }

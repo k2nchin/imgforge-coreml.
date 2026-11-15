@@ -214,3 +214,76 @@ final class EnvironmentTests: XCTestCase {
         XCTAssertFalse(ForgeEnvironment.isExtension)
     }
 }
+
+final class ContourTracerTests: XCTestCase {
+
+    private func mask(_ draw: (CGContext, CGSize) -> Void,
+                      size: CGSize = CGSize(width: 100, height: 100)) -> CGImage {
+        renderAtScale1(size) { ctx in
+            UIColor.black.setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+            UIColor.white.setFill()
+            draw(ctx.cgContext, size)
+        }.cgImage!
+    }
+
+    func testSquareProducesOneContour() throws {
+        let cg = mask { ctx, _ in
+            ctx.fill(CGRect(x: 20, y: 20, width: 60, height: 60))
+        }
+        let contours = try ContourTracer.trace(mask: cg)
+        XCTAssertEqual(contours.count, 1)
+        XCTAssertGreaterThan(abs(contours[0].area), 0.3,
+                             "Un cuadrado de 60×60 en 100×100 cubre ~0.36")
+    }
+
+    func testDonutProducesTwoContours() throws {
+        let cg = mask { ctx, _ in
+            ctx.fillEllipse(in: CGRect(x: 10, y: 10, width: 80, height: 80))
+            ctx.setFillColor(UIColor.black.cgColor)
+            ctx.fillEllipse(in: CGRect(x: 35, y: 35, width: 30, height: 30))
+        }
+        let contours = try ContourTracer.trace(mask: cg)
+        XCTAssertEqual(contours.count, 2,
+                       "El borde exterior y el del hueco son dos contornos")
+    }
+
+    func testTwoShapesAreSeparate() throws {
+        let cg = mask { ctx, _ in
+            ctx.fill(CGRect(x: 5, y: 5, width: 25, height: 25))
+            ctx.fill(CGRect(x: 65, y: 65, width: 25, height: 25))
+        }
+        XCTAssertEqual(try ContourTracer.trace(mask: cg).count, 2)
+    }
+
+    func testEmptyMaskProducesNothing() throws {
+        let cg = mask { _, _ in }
+        XCTAssertTrue(try ContourTracer.trace(mask: cg).isEmpty)
+    }
+
+    func testSimplifyDropsCollinearPoints() {
+        // Un cuadrado muestreado cada píxel: 4 esquinas bastan.
+        var pts: [SIMD2<Float>] = []
+        for i in 0..<50 { pts.append(SIMD2(Float(i) / 50, 0)) }
+        for i in 0..<50 { pts.append(SIMD2(1, Float(i) / 50)) }
+        for i in 0..<50 { pts.append(SIMD2(1 - Float(i) / 50, 1)) }
+        for i in 0..<50 { pts.append(SIMD2(0, 1 - Float(i) / 50)) }
+
+        let simple = ContourTracer.simplify(pts, epsilon: 0.01)
+        XCTAssertLessThan(simple.count, 12,
+                          "200 puntos colineales deben colapsar a unas pocas esquinas")
+        XCTAssertGreaterThanOrEqual(simple.count, 4)
+    }
+
+    /// La resolución real importa: Vision recortaba a 1024 y perdía detalle.
+    func testTracesBeyond1024Pixels() throws {
+        let cg = mask({ ctx, size in
+            ctx.fill(CGRect(x: 100, y: 100, width: size.width - 200,
+                            height: size.height - 200))
+        }, size: CGSize(width: 1600, height: 1600))
+
+        let contours = try ContourTracer.trace(mask: cg)
+        XCTAssertEqual(contours.count, 1)
+        XCTAssertGreaterThan(contours[0].points.count, 100)
+    }
+}
