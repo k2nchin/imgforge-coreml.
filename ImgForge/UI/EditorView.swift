@@ -24,6 +24,11 @@ final class EditorStore {
     var lockAspect = true
     var export = Exporter.Settings()
 
+    /// Mientras el usuario no fije una medida, el tamaño de salida sigue
+    /// al recorte. Sin esto, recortar y exportar volvía a estirar el
+    /// recorte hasta las medidas originales, que es pura pérdida.
+    private(set) var sizeTouched = false
+
     private(set) var isWorking = false
     var error: String?
     var status: String?
@@ -50,40 +55,67 @@ final class EditorStore {
         adjustments = Adjustments.Options()
         error = nil
         status = nil
-
-        if let cg = source?.cgImage {
-            resize.width = cg.width
-            resize.height = cg.height
-        }
+        sizeTouched = false
+        syncSizeToCrop()
         schedulePreview()
+    }
+
+    /// Tamaño nativo del recorte, en píxeles reales de la fuente.
+    var croppedPixels: (width: Int, height: Int) {
+        guard let cg = source?.cgImage else { return (0, 0) }
+        let quarters = ((adjustments.rotationQuarters % 4) + 4) % 4
+        let w = Int((CGFloat(cg.width) * crop.width).rounded())
+        let h = Int((CGFloat(cg.height) * crop.height).rounded())
+        return quarters % 2 == 1 ? (h, w) : (w, h)
+    }
+
+    func syncSizeToCrop() {
+        guard !sizeTouched else { return }
+        let p = croppedPixels
+        guard p.width > 0, p.height > 0 else { return }
+        resize.width = p.width
+        resize.height = p.height
+    }
+
+    func cropChanged() {
+        syncSizeToCrop()
+        schedulePreview()
+    }
+
+    /// Vuelve al tamaño nativo del recorte: sin remuestreo, sin pérdida.
+    func useNativeSize() {
+        sizeTouched = false
+        syncSizeToCrop()
+        status = "Tamaño nativo: \(resize.width) × \(resize.height)"
     }
 
     func reset() {
         crop = CGRect(x: 0, y: 0, width: 1, height: 1)
         ratio = nil
         adjustments = Adjustments.Options()
-        if let cg = source?.cgImage {
-            resize.width = cg.width
-            resize.height = cg.height
-        }
+        sizeTouched = false
+        syncSizeToCrop()
         status = "Ajustes restablecidos."
         schedulePreview()
     }
 
     /// El candado: al escribir un lado, el otro se deduce.
     func widthChanged(_ value: Int) {
+        sizeTouched = true
         resize.width = max(1, value)
         guard lockAspect else { return }
         resize.height = max(1, Int((CGFloat(resize.width) / croppedAspect).rounded()))
     }
 
     func heightChanged(_ value: Int) {
+        sizeTouched = true
         resize.height = max(1, value)
         guard lockAspect else { return }
         resize.width = max(1, Int((CGFloat(resize.height) * croppedAspect).rounded()))
     }
 
     func applyPreset(_ p: Resizer.SizePreset) {
+        sizeTouched = true
         resize.width = p.width
         resize.height = p.height
         status = p.name
@@ -102,7 +134,19 @@ final class EditorStore {
             w = r / imageAspect
         }
         crop = CGRect(x: (1 - w) / 2, y: (1 - h) / 2, width: w, height: h)
-        schedulePreview()
+        cropChanged()
+    }
+
+    /// Avisa cuando la medida pedida obliga a inventar o tirar píxeles.
+    var resampleNote: String? {
+        guard sizeTouched else { return nil }
+        let n = croppedPixels
+        guard n.width > 0 else { return nil }
+        if resize.width == n.width && resize.height == n.height { return nil }
+        if resize.width > n.width || resize.height > n.height {
+            return "Mayor que el recorte: se interpola. Usa Forja para ampliar con el modelo."
+        }
+        return "Menor que el recorte (\(n.width) × \(n.height)): se reduce."
     }
 
     // MARK: - Vista previa
@@ -141,9 +185,12 @@ final class EditorStore {
         let area = crop
         let settings = export
         var size = resize
-        if size.width <= 0 || size.height <= 0 {
-            size.width = Int(CGFloat(src.cgImage?.width ?? 1) * area.width)
-            size.height = Int(CGFloat(src.cgImage?.height ?? 1) * area.height)
+        let native = croppedPixels
+
+        // Sin medida fija, se exporta el recorte tal cual: ni un remuestreo.
+        if !sizeTouched || size.width <= 0 || size.height <= 0 {
+            size.width = max(1, native.width)
+            size.height = max(1, native.height)
         }
 
         do {
@@ -231,7 +278,7 @@ struct EditorView: View {
                 if store.panel == .crop {
                     CropOverlay(image: src, rect: $store.crop, ratio: store.ratio)
                         .padding(12)
-                        .onChange(of: store.crop) { _, _ in store.schedulePreview() }
+                        .onChange(of: store.crop) { _, _ in store.cropChanged() }
                 } else if let p = store.preview {
                     Image(uiImage: p)
                         .resizable()
@@ -430,7 +477,21 @@ struct EditorView: View {
             }
             .scrollClipDisabled()
 
-            LabeledContent("Origen", value: store.croppedSize).font(.footnote)
+            HStack {
+                LabeledContent("Recorte", value: store.croppedSize)
+                Spacer()
+                if store.sizeTouched {
+                    Button("Nativo") { store.useNativeSize() }
+                        .font(.footnote.weight(.semibold))
+                }
+            }
+            .font(.footnote)
+
+            if let note = store.resampleNote {
+                Label(note, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Divider()
 

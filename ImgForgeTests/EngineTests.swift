@@ -647,3 +647,81 @@ final class ExporterTests: XCTestCase {
         XCTAssertEqual(url.pathExtension, "svg")
     }
 }
+
+@MainActor
+final class EditorSizeTests: XCTestCase {
+
+    private func loaded() -> EditorStore {
+        let store = EditorStore()
+        store.load(renderAtScale1(CGSize(width: 2000, height: 1000)) { ctx in
+            UIColor.systemGreen.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 2000, height: 1000))
+        })
+        return store
+    }
+
+    func testSizeStartsAtNative() {
+        let s = loaded()
+        XCTAssertEqual(s.resize.width, 2000)
+        XCTAssertEqual(s.resize.height, 1000)
+        XCTAssertFalse(s.sizeTouched)
+    }
+
+    /// El bug: recortar a la mitad y exportar volvía a estirar el recorte
+    /// hasta las medidas originales, interpolando píxeles que no existían.
+    func testCropUpdatesSizeSoNothingIsStretchedBack() {
+        let s = loaded()
+        s.crop = CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
+        s.cropChanged()
+
+        XCTAssertEqual(s.resize.width, 1000)
+        XCTAssertEqual(s.resize.height, 500)
+        XCTAssertNil(s.resampleNote, "Al tamaño nativo no hay remuestreo que avisar")
+    }
+
+    func testManualSizeIsRespectedAndCropStopsOverwritingIt() {
+        let s = loaded()
+        s.widthChanged(800)
+        XCTAssertTrue(s.sizeTouched)
+
+        s.crop = CGRect(x: 0, y: 0, width: 0.5, height: 1)
+        s.cropChanged()
+        XCTAssertEqual(s.resize.width, 800, "Una medida escrita a mano no se pisa")
+    }
+
+    func testNativeButtonReturnsToCropSize() {
+        let s = loaded()
+        s.applyPreset(Resizer.presets[0])          // 1080 × 1080
+        XCTAssertTrue(s.sizeTouched)
+
+        s.useNativeSize()
+        XCTAssertFalse(s.sizeTouched)
+        XCTAssertEqual(s.resize.width, 2000)
+        XCTAssertEqual(s.resize.height, 1000)
+    }
+
+    func testWarnsWhenAskedToEnlarge() {
+        let s = loaded()
+        s.widthChanged(4000)
+        XCTAssertNotNil(s.resampleNote)
+        XCTAssertTrue(s.resampleNote?.contains("interpola") ?? false)
+    }
+
+    func testQuarterTurnSwapsNativeSize() {
+        let s = loaded()
+        s.adjustments.rotationQuarters = 1
+        s.syncSizeToCrop()
+        XCTAssertEqual(s.croppedPixels.width, 1000)
+        XCTAssertEqual(s.croppedPixels.height, 2000)
+    }
+
+    func testAspectLockFollowsTheCropNotTheOriginal() {
+        let s = loaded()
+        s.crop = CGRect(x: 0, y: 0, width: 0.5, height: 1)   // ahora 1000×1000
+        s.cropChanged()
+
+        s.lockAspect = true
+        s.widthChanged(500)
+        XCTAssertEqual(s.resize.height, 500, "La proporción es la del recorte, 1:1")
+    }
+}
