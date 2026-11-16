@@ -53,7 +53,6 @@ enum ContourTracer {
                 var steps = 0
 
                 repeat {
-                    usedEdges.insert(edgeKey(x: px, y: py, dir: dir, w: w))
                     points.append(SIMD2(Float(px) / fw, 1 - Float(py) / fh))
 
                     // Invariante: el relleno queda a la derecha del avance.
@@ -65,6 +64,12 @@ enum ContourTracer {
                     } else if fg(lx, ly) {
                         dir = (dir + 3) & 3            // girar a la izquierda
                     }
+
+                    // La arista se marca con la dirección ya decidida: antes
+                    // se marcaba la de llegada, que no siempre es la que se
+                    // recorre, así que la de arranque quedaba sin marcar y
+                    // cada fila reabría el mismo contorno.
+                    usedEdges.insert(edgeKey(x: px, y: py, dir: dir, w: w))
 
                     let step = delta(dir)
                     px += step.0
