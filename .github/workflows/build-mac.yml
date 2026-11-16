@@ -1,0 +1,134 @@
+name: Build macOS app
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_model:
+        description: "Incluir RealESRGAN.mlmodelc"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: build-mac-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+
+      - name: Incorporar el modelo Core ML
+        if: ${{ github.event.inputs.include_model != 'false' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUN=$(gh run list \
+            --workflow "Convert Real-ESRGAN to Core ML" \
+            --status success --limit 1 \
+            --json databaseId --jq '.[0].databaseId')
+
+          if [ -z "$RUN" ] || [ "$RUN" = "null" ]; then
+            echo "::warning::Sin conversiones exitosas; se compila sin modelo."
+            exit 0
+          fi
+
+          gh run download "$RUN" -D model
+          find model -name '*.zip' -exec unzip -qo {} -d model \;
+
+          MODEL=$(find model -maxdepth 3 -name 'RealESRGAN.mlmodelc' -type d | head -1)
+          if [ -n "$MODEL" ]; then
+            rm -rf ImgForge/Resources/RealESRGAN.mlmodelc
+            cp -R "$MODEL" ImgForge/Resources/
+            du -sh ImgForge/Resources/RealESRGAN.mlmodelc
+          fi
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generar proyecto
+        run: xcodegen generate --spec project.yml
+
+      - name: Compilar para Mac Catalyst
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project ImgForge.xcodeproj \
+            -scheme ImgForge \
+            -configuration Release \
+            -destination 'platform=macOS,variant=Mac Catalyst,arch=arm64' \
+            -derivedDataPath build/dd \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee build-mac.log | xcpretty || {
+              echo "::group::Errores"
+              grep -E "error:" build-mac.log | head -40
+              echo "::endgroup::"
+              exit 1
+            }
+
+      - name: Firmar ad-hoc y empaquetar
+        run: |
+          set -euo pipefail
+          APP=$(find build/dd/Build/Products -name 'ImgForge.app' -maxdepth 3 | head -1)
+          test -n "$APP" || { echo "No se generó el .app" >&2; exit 1; }
+          echo "App: $APP"
+
+          # macOS no ejecuta un binario arm64 sin firma. La firma ad-hoc
+          # no identifica a nadie, pero deja que la app arranque.
+          codesign --force --deep --sign - "$APP"
+          codesign -dv --verbose=2 "$APP" 2>&1 | head -6
+
+          mkdir -p build/out
+          cp -R "$APP" build/out/
+          cd build/out
+          ditto -c -k --sequesterRsrc --keepParent ImgForge.app ImgForge-macOS.zip
+          ls -lh ImgForge-macOS.zip
+
+      - name: Publicar Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="mac-${{ github.run_number }}"
+          SIZE=$(du -h build/out/ImgForge-macOS.zip | cut -f1)
+
+          gh release create "$TAG" \
+            build/out/ImgForge-macOS.zip \
+            --title "ImgForge para Mac ${{ github.run_number }}" \
+            --notes "App de macOS (Mac Catalyst, Apple Silicon), $SIZE.
+
+          Para abrirla la primera vez:
+          1. Descomprime el zip.
+          2. Arrastra ImgForge.app a Aplicaciones.
+          3. En Terminal: xattr -dr com.apple.quarantine /Applications/ImgForge.app
+          4. Ábrela normal.
+
+          El paso 3 hace falta porque la firma es ad-hoc, no de desarrollador.
+
+          Commit: ${{ github.sha }}"
+
+          gh release view "$TAG" --json url --jq '.url'
+
+      - name: Logs si falla
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-build-log
+          path: build-mac.log
+          retention-days: 7
+          if-no-files-found: ignore

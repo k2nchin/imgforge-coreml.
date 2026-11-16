@@ -38,11 +38,18 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         TARGETED_DEVICE_FAMILY: "1,2"
-        SUPPORTS_MACCATALYST: NO
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        # Mac Catalyst: la misma base de codigo corre nativa en Apple
+        # Silicon. Core Image, Vision y Core ML existen igual en macOS.
+        SUPPORTS_MACCATALYST: YES
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: YES
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
     dependencies:
       - target: ImgForgeShare
         embed: true
+        # Una Share Extension de iOS no se incrusta en una app Catalyst.
+        platformFilter: iOS
 
   ImgForgeShare:
     type: app-extension
